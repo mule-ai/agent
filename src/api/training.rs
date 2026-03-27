@@ -41,7 +41,10 @@ pub struct StatusResponse {
 pub struct TrainingJobResponse {
     pub id: String,
     pub status: String,
-    pub steps: usize,
+    pub epochs: usize,
+    pub current_epoch: usize,
+    pub current_step: usize,
+    pub total_steps: usize,
     pub created_at: String,
     pub started_at: Option<String>,
     pub completed_at: Option<String>,
@@ -53,7 +56,10 @@ impl From<&TrainingJob> for TrainingJobResponse {
         Self {
             id: job.id.clone(),
             status: job.status.to_string(),
-            steps: job.steps,
+            epochs: job.epochs,
+            current_epoch: job.current_epoch,
+            current_step: job.current_step,
+            total_steps: job.total_steps,
             created_at: job.created_at.to_rfc3339(),
             started_at: job.started_at.map(|dt| dt.to_rfc3339()),
             completed_at: job.completed_at.map(|dt| dt.to_rfc3339()),
@@ -128,7 +134,7 @@ pub async fn trigger_training(
     }
 
     let steps = if request.steps == 0 { 500 } else { request.steps };
-    let mut job = TrainingJob::new(steps);
+    let mut job = TrainingJob::new(3, steps);
     let job_id = job.id.clone();
 
     job.start();
@@ -219,13 +225,13 @@ mod tests {
 
     #[test]
     fn test_training_job_response_from_job() {
-        let mut job = TrainingJob::new(500);
+        let mut job = TrainingJob::new(3, 125);
         job.start();
 
         let response = TrainingJobResponse::from(&job);
         
         assert_eq!(response.status, "training");
-        assert_eq!(response.steps, 500);
+        assert_eq!(response.epochs, 3);
         assert!(response.started_at.is_some());
     }
 

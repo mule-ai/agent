@@ -59,10 +59,17 @@ model = "qwen3:8b"
 output_path = ".agent/models"
 
 # Training settings
-batch_size = 4
-steps = 500
-learning_rate = 5e-6
-lora_rank = 16
+epochs = 3                  # Number of passes through the dataset
+batch_size = 4              # Samples per batch
+gradient_accumulation_steps = 1  # Effective batch = batch_size * accumulation
+learning_rate = 1e-4        # Higher LR for fine-tuning
+lora_rank = 16              # LoRA adapter rank
+warmup_steps = 10           # Learning rate warmup
+lr_scheduler = "cosine"    # Learning rate schedule
+
+# Early stopping
+early_stopping_patience = 3  # Stop if no improvement for N epochs
+min_loss_improvement = 0.01  # Minimum loss improvement to count as progress
 
 [summarization]
 # AI summarization provider

@@ -114,14 +114,30 @@ pub struct TrainingConfig {
     pub schedule: String,
     pub model: String,
     pub output_path: PathBuf,
+    #[serde(default = "default_epochs")]
+    pub epochs: usize,
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
-    #[serde(default = "default_steps")]
-    pub steps: usize,
+    #[serde(default)]
+    pub gradient_accumulation_steps: usize,
+    #[serde(default = "default_learning_rate")]
+    pub learning_rate: f32,
+    #[serde(default = "default_lora_rank")]
+    pub lora_rank: usize,
+    #[serde(default)]
+    pub warmup_steps: usize,
+    #[serde(default)]
+    pub lr_scheduler: String,
+    #[serde(default)]
+    pub early_stopping_patience: usize,
+    #[serde(default)]
+    pub min_loss_improvement: f32,
 }
 
+fn default_epochs() -> usize { 3 }
 fn default_batch_size() -> usize { 4 }
-fn default_steps() -> usize { 500 }
+fn default_learning_rate() -> f32 { 1e-4 }
+fn default_lora_rank() -> usize { 16 }
 
 impl Default for TrainingConfig {
     fn default() -> Self {
@@ -130,8 +146,15 @@ impl Default for TrainingConfig {
             schedule: "0 2 * * *".to_string(),
             model: "qwen3:8b".to_string(),
             output_path: PathBuf::from(".agent/models"),
+            epochs: 3,
             batch_size: 4,
-            steps: 500,
+            gradient_accumulation_steps: 1,
+            learning_rate: 1e-4,
+            lora_rank: 16,
+            warmup_steps: 10,
+            lr_scheduler: "cosine".to_string(),
+            early_stopping_patience: 3,
+            min_loss_improvement: 0.01,
         }
     }
 }

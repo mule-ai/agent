@@ -354,7 +354,10 @@ impl std::fmt::Display for TrainingStatus {
 pub struct TrainingJob {
     pub id: String,
     pub status: TrainingStatus,
-    pub steps: usize,
+    pub epochs: usize,
+    pub current_epoch: usize,
+    pub current_step: usize,
+    pub total_steps: usize,
     pub created_at: DateTime<Utc>,
     pub started_at: Option<DateTime<Utc>>,
     pub completed_at: Option<DateTime<Utc>>,
@@ -362,11 +365,14 @@ pub struct TrainingJob {
 }
 
 impl TrainingJob {
-    pub fn new(steps: usize) -> Self {
+    pub fn new(epochs: usize, total_steps: usize) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
             status: TrainingStatus::Pending,
-            steps,
+            epochs,
+            current_epoch: 0,
+            current_step: 0,
+            total_steps,
             created_at: Utc::now(),
             started_at: None,
             completed_at: None,
@@ -474,7 +480,7 @@ mod tests {
 
     #[test]
     fn test_training_job_lifecycle() {
-        let mut job = TrainingJob::new(500);
+        let mut job = TrainingJob::new(3, 125);
         assert_eq!(job.status, TrainingStatus::Pending);
         
         job.start();
