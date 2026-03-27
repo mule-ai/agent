@@ -5,16 +5,54 @@ edition = "2024"
 description = "AGI Agent with extensive memory and RL"
 authors = ["AGI Team"]
 
+[features]
+default = []
+
 [dependencies]
-axum = "0.8"
+# Web framework
+axum = { version = "0.8", features = ["ws", "macros"] }
 tokio = { version = "1", features = ["full"] }
+tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
+
+# Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+toml = "0.8"
+
+# Database & Storage
 rusqlite = { version = "0.32", features = ["bundled"] }
-reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+tantivy = "0.22"
+
+# HTTP Client
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Async utilities
+futures = "0.3"
+async-trait = "0.1"
+tokio-stream = "0.1"
+
+# Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Utilities
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
+thiserror = "1"
 anyhow = "1"
+once_cell = "1"
+parking_lot = "0.12"
+clap = { version = "4", features = ["derive"] }
+lazy_static = "1.4"
+lru = "0.12"
+regex = "1"
+
+[dev-dependencies]
+tokio-test = "0.4"
+tempfile = "3"
+wiremock = "0.6"
+
+[[bin]]
+name = "agent"
+path = "src/main.rs"
