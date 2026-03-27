@@ -1,0 +1,90 @@
+# AGI Agent Configuration
+
+[server]
+host = "0.0.0.0"
+port = 8080
+workers = 4
+
+[model]
+# LLM API endpoint
+base_url = "http://localhost:11434"
+
+# Model name
+name = "qwen3:8b"
+
+# Embedding model
+embedding_model = "nomic-embed-text"
+embedding_dim = 768
+
+# Optional API key for OpenAI-compatible APIs
+# api_key = "sk-..."
+
+# Generation settings
+max_tokens = 4096
+temperature = 0.7
+
+[memory]
+# Path to memory storage
+storage_path = ".agent/memory"
+
+# Default TTL for retrieval memories (hours)
+retrieval_ttl_hours = 24
+
+# Default namespace
+default_namespace = "retrieval"
+
+# Retrieval settings
+min_similarity = 0.6
+query_limit = 10
+
+[search]
+# SearXNG instance
+instance = "https://search.butler.ooo"
+
+# Settings
+timeout = 30
+results = 10
+
+[training]
+# Enable training
+enabled = true
+
+# Cron schedule (2 AM daily)
+schedule = "0 2 * * *"
+
+# Base model for training
+model = "qwen3:8b"
+
+# Output path
+output_path = ".agent/models"
+
+# Training settings
+batch_size = 4
+steps = 500
+learning_rate = 5e-6
+lora_rank = 16
+
+[summarization]
+# AI summarization provider
+provider = "openai"
+
+# API key (or set via SEARCH_SUMMARIZE_API_KEY env var)
+# api_key = "sk-..."
+
+# Model
+model = "gpt-4o-mini"
+
+# Timeout
+timeout = 60
+
+[tools]
+# Enable/disable tools
+search_enabled = true
+bash_enabled = true
+file_tools_enabled = true
+
+# Bash restrictions (empty = allow all)
+# allowed_commands = ["git", "ls", "cat", "grep"]
+
+# Working directory for bash commands
+# bash_working_dir = "/tmp"
