@@ -6,11 +6,11 @@ port = 8080
 workers = 4
 
 [model]
-# LLM API endpoint
-base_url = "http://localhost:11434"
+# LLM API endpoint (llama.cpp server)
+base_url = "http://10.10.199.146:8081"
 
 # Model name
-name = "qwen3:8b"
+name = "qwen3.5-4b"
 
 # Embedding model
 embedding_model = "nomic-embed-text"
@@ -53,7 +53,7 @@ enabled = true
 schedule = "0 2 * * *"
 
 # Base model for training
-model = "qwen3:8b"
+model = "qwen3.5-4b"
 
 # Output path
 output_path = ".agent/models"

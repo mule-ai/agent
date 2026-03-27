@@ -1,0 +1,47 @@
+#!/bin/bash
+# AGI Agent CLI - Easy wrapper script
+# Usage: ./agi chat | ./agi train | ./agi status | ./agi models
+
+cd "$(dirname "$0")"
+
+case "${1:-chat}" in
+    chat)
+        python3 cli.py chat "${@:2}"
+        ;;
+    train)
+        python3 cli.py train "${@:2}"
+        ;;
+    status)
+        python3 cli.py status
+        ;;
+    models)
+        python3 cli.py models
+        ;;
+    adapter)
+        python3 cli.py chat-adapter "${2}"
+        ;;
+    help|--help|-h)
+        echo "AGI Agent CLI"
+        echo ""
+        echo "Usage: agi <command> [options]"
+        echo ""
+        echo "Commands:"
+        echo "  chat              Chat with base model (qwen3.5-4b)"
+        echo "  chat --model M    Chat with specific model M"
+        echo "  train [opts]      Trigger RL training"
+        echo "  status            Check training status"
+        echo "  models            List available models"
+        echo "  adapter <name>    Chat with LoRA adapter"
+        echo "  help              Show this help"
+        echo ""
+        echo "Examples:"
+        echo "  ./agi chat                        # Start chat"
+        echo "  ./agi train --steps 500           # Train for 500 steps"
+        echo "  ./agi models                      # List models"
+        ;;
+    *)
+        echo "Unknown command: $1"
+        echo "Run './agi help' for usage"
+        exit 1
+        ;;
+esac
