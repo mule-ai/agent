@@ -203,7 +203,7 @@ async fn main() -> anyhow::Result<()> {
     // Create other background services first (needed for scheduler)
     let service_manager = Arc::new(ServiceManager::new());
     let session_review_service = Arc::new(SessionReviewService::new());
-    let memory_eviction_service = Arc::new(MemoryEvictionService::new());
+    let memory_eviction_service = Arc::new(MemoryEvictionService::with_ttl(config.memory.retrieval_ttl_hours));
     
     // Create scheduler service for automated tasks with all services wired up
     let scheduler_config = crate::services::SchedulerConfig {

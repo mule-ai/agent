@@ -145,6 +145,16 @@ impl MemoryEvictionService {
         }
     }
 
+    /// Create service with TTL from memory config
+    pub fn with_ttl(retrieval_ttl_hours: u32) -> Self {
+        let mut config = MemoryEvictionConfig::default();
+        config.eviction_policy.max_age_hours = retrieval_ttl_hours;
+        Self {
+            config,
+            stats: Arc::new(RwLock::new(MemoryEvictionStats::new())),
+        }
+    }
+
     /// Get service statistics
     pub async fn get_stats(&self) -> MemoryEvictionStats {
         self.stats.read().await.clone()
@@ -154,15 +164,39 @@ impl MemoryEvictionService {
     pub fn is_memory_expired(&self, memory: &Memory) -> bool {
         let max_age = Duration::hours(self.config.eviction_policy.max_age_hours as i64);
         let age = Utc::now() - memory.created_at;
-        age > max_age
+        let expired = age > max_age;
+        tracing::info!(
+            "Checking memory {}: age={:?}, max_age={}h, expired={}, keep_facts={}, is_persistent={}",
+            memory.id,
+            age,
+            self.config.eviction_policy.max_age_hours,
+            expired,
+            self.config.eviction_policy.keep_facts,
+            memory.is_persistent
+        );
+        expired
     }
 
     /// Determine eviction action for a memory
     pub fn evaluate_memory(&self, memory: &Memory, _access_count: usize) -> EvictionDecision {
         // Check if memory is too old
         if self.is_memory_expired(memory) {
+            tracing::debug!(
+                "Memory {} is expired (age: {:?}, max_age: {} hours, type: {:?})",
+                memory.id,
+                Utc::now() - memory.created_at,
+                self.config.eviction_policy.max_age_hours,
+                memory.memory_type
+            );
             return self.decide_for_expired(memory);
         }
+
+        tracing::debug!(
+            "Memory {} is NOT expired (age: {:?}, max_age: {} hours)",
+            memory.id,
+            Utc::now() - memory.created_at,
+            self.config.eviction_policy.max_age_hours
+        );
 
         // For now, keep memories that aren't expired
         EvictionDecision::Keep
