@@ -18,7 +18,7 @@ use anyhow::Context;
 use agent::{Agent, AgentConfig, SessionStore};
 use api::chat::AppState;
 use memory::{EmbeddingClient, SqliteMemoryStore};
-use services::{CuriosityEngine, MemoryEvictionService, SearchLearningService, ServiceManager, SessionReviewService, OnlineLearningService, SelfImproveEngine, TheoryOfMindEngine, BatchTrainingService, SchedulerService, SchedulerConfig};
+use services::{CuriosityEngine, MemoryEvictionService, SearchLearningService, ServiceManager, SessionReviewService, OnlineLearningService, SelfImproveEngine, TheoryOfMindEngine, BatchTrainingService, SchedulerService};
 use std::sync::Arc;
 use tools::ToolRegistry;
 use tower_http::cors::{Any, CorsLayer};
@@ -227,10 +227,11 @@ async fn main() -> anyhow::Result<()> {
     
     // Wire search learning to batch training service
     let batch_service_clone = (*batch_training_service).clone();
+    let search_service_clone = search_learning_service.clone();
     tokio::spawn(async move {
         // Wait briefly for services to be ready
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        search_learning_service.set_batch_training_service(batch_service_clone).await;
+        search_service_clone.set_batch_training_service(batch_service_clone).await;
     });
     
     let curiosity_engine = Arc::new(CuriosityEngine::new());
@@ -240,9 +241,10 @@ async fn main() -> anyhow::Result<()> {
     
     // Wire curiosity engine to batch training service for automatic training data generation
     let batch_service_for_curiosity = (*batch_training_service).clone();
+    let curiosity_clone = curiosity_engine.clone();
     tokio::spawn(async move {
         tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
-        curiosity_engine.wire_to_batch_training(batch_service_for_curiosity).await;
+        curiosity_clone.wire_to_batch_training(batch_service_for_curiosity).await;
     });
     
     tracing::info!("Background services initialized (Search Learning v0.1, Batch Training v0.1, Scheduler v0.2, Curiosity Engine v0.1, Online Learning v0.1, Self-Improve v0.1, Theory of Mind v0.1)");
@@ -301,7 +303,7 @@ async fn main() -> anyhow::Result<()> {
         self_improve_engine,
         theory_of_mind_engine,
         batch_training_service,
-        scheduler_service,
+        scheduler_service: scheduler_service.clone(),
         session_store,
         wikipedia,
         arxiv,

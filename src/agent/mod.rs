@@ -4,7 +4,7 @@
 
 mod session;
 mod reasoning;
-mod llm;
+pub mod llm;
 pub mod session_store;
 pub mod team;
 

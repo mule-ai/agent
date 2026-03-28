@@ -33,7 +33,9 @@ pub use theory_of_mind::{
     ToMAnalysis, MessageContext,
 };
 pub use batch_training::BatchTrainingService;
-pub use scheduler::{SchedulerService, SchedulerConfig, SchedulerStats};
+pub use scheduler::{SchedulerService, SchedulerConfig};
+#[allow(unused)]
+pub use scheduler::SchedulerStats;
 
 use std::sync::Arc;
 use tokio::sync::RwLock;

@@ -1,0 +1,36 @@
+[2m2026-03-28T12:00:56.870729Z[0m [32m INFO[0m [2magent[0m[2m:[0m Starting AGI Agent v0.1.0
+[2m2026-03-28T12:00:56.910630Z[0m [32m INFO[0m [2magent[0m[2m:[0m Configuration loaded
+[2m2026-03-28T12:00:56.912389Z[0m [32m INFO[0m [2magent[0m[2m:[0m Memory store initialized at "/home/administrator/.agi/memory/memories.db"
+[2m2026-03-28T12:00:56.912658Z[0m [32m INFO[0m [2magent[0m[2m:[0m Embedding client initialized
+[2m2026-03-28T12:00:56.912742Z[0m [32m INFO[0m [2magent::tools[0m[2m:[0m Registered tool: search
+[2m2026-03-28T12:00:56.912752Z[0m [32m INFO[0m [2magent::tools[0m[2m:[0m Registered tool: bash
+[2m2026-03-28T12:00:56.912761Z[0m [32m INFO[0m [2magent::tools[0m[2m:[0m Registered tool: read
+[2m2026-03-28T12:00:56.912771Z[0m [32m INFO[0m [2magent::tools[0m[2m:[0m Registered tool: write
+[2m2026-03-28T12:00:56.912779Z[0m [32m INFO[0m [2magent::tools[0m[2m:[0m Registered tool: fetch_image
+[2m2026-03-28T12:00:56.912848Z[0m [32m INFO[0m [2magent::tools[0m[2m:[0m Registered tool: fetch
+[2m2026-03-28T12:00:56.912859Z[0m [32m INFO[0m [2magent[0m[2m:[0m Tool registry initialized with 6 tools
+[2m2026-03-28T12:00:56.913018Z[0m [32m INFO[0m [2magent::services::batch_training[0m[2m:[0m Loaded 5 persisted examples from "/home/administrator/.agi/training/examples.jsonl"
+[2m2026-03-28T12:00:56.913183Z[0m [32m INFO[0m [2magent[0m[2m:[0m Background services initialized (Search Learning v0.1, Batch Training v0.1, Scheduler v0.2, Curiosity Engine v0.1, Online Learning v0.1, Self-Improve v0.1, Theory of Mind v0.1)
+[2m2026-03-28T12:00:56.913334Z[0m [32m INFO[0m [2magent[0m[2m:[0m Agent initialized
+[2m2026-03-28T12:00:56.913866Z[0m [32m INFO[0m [2magent[0m[2m:[0m Session store initialized for persistent sessions
+[2m2026-03-28T12:00:56.914457Z[0m [31mERROR[0m [2magent[0m[2m:[0m Failed to start scheduler: Failed to create batch training job
+[2m2026-03-28T12:00:56.914473Z[0m [32m INFO[0m [2magent[0m[2m:[0m External knowledge base initialized (Wikipedia, ArXiv, Web fetcher)
+[2m2026-03-28T12:00:56.914468Z[0m [31mERROR[0m [2mtokio_cron_scheduler::simple::to_code[0m[2m:[0m Error receiving Closed
+[2m2026-03-28T12:00:56.914484Z[0m [31mERROR[0m [2mtokio_cron_scheduler::simple::to_code[0m[2m:[0m Error receiving job removal Closed
+[2m2026-03-28T12:00:56.914501Z[0m [31mERROR[0m [2mtokio_cron_scheduler::simple::to_code[0m[2m:[0m Error receiving Closed
+[2m2026-03-28T12:00:56.914506Z[0m [31mERROR[0m [2mtokio_cron_scheduler::simple::to_code[0m[2m:[0m Error receiving job removal Closed
+[2m2026-03-28T12:00:56.915468Z[0m [32m INFO[0m [2magent[0m[2m:[0m Starting HTTP server on http://0.0.0.0:8080
+[2m2026-03-28T12:01:12.803800Z[0m [32m INFO[0m [2mtantivy::indexer::index_writer[0m[2m:[0m Preparing commit
+[2m2026-03-28T12:01:12.834070Z[0m [32m INFO[0m [2mtantivy::indexer::segment_updater[0m[2m:[0m Starting merge  - [Seg("b347aeb5"), Seg("0d48a68b"), Seg("f3b7e828"), Seg("95992612"), Seg("1ed3c4cf"), Seg("4a8c1435"), Seg("6de013a3"), Seg("a4ddecdb"), Seg("ca447260"), Seg("829c9e95"), Seg("c6bf9a0c"), Seg("de17168a"), Seg("db493d01"), Seg("24b464ad"), Seg("b1a1f36e"), Seg("dbb04b1c"), Seg("72989655"), Seg("61c63918"), Seg("95de4455"), Seg("2de3eb9f"), Seg("2dd914f3"), Seg("8e9f8c00"), Seg("1eb08edf"), Seg("9d68568d"), Seg("a8393864"), Seg("fcfae9ff"), Seg("d4ef15c9"), Seg("052ccdb5"), Seg("4d45af42"), Seg("272e7585")]
+[2m2026-03-28T12:01:12.834508Z[0m [32m INFO[0m [2mtantivy::indexer::index_writer[0m[2m:[0m Prepared commit 62
+[2m2026-03-28T12:01:12.834520Z[0m [32m INFO[0m [2mtantivy::indexer::prepared_commit[0m[2m:[0m committing 62
+[2m2026-03-28T12:01:12.834553Z[0m [32m INFO[0m [2mtantivy::indexer::segment_updater[0m[2m:[0m save metas
+[2m2026-03-28T12:01:12.836825Z[0m [32m INFO[0m [2mtantivy::indexer::segment_updater[0m[2m:[0m Running garbage collection
+[2m2026-03-28T12:01:12.836832Z[0m [32m INFO[0m [2mtantivy::directory::managed_directory[0m[2m:[0m Garbage collect
+[2m2026-03-28T12:01:12.837076Z[0m [32m INFO[0m [2mtantivy::directory::managed_directory[0m[2m:[0m Deleted "48c24ee115bc46a084c8da79b5bc3dc2.term"
+[2m2026-03-28T12:01:12.837118Z[0m [32m INFO[0m [2mtantivy::directory::managed_directory[0m[2m:[0m Deleted "48c24ee115bc46a084c8da79b5bc3dc2.pos"
+[2m2026-03-28T12:01:12.837157Z[0m [32m INFO[0m [2mtantivy::directory::managed_directory[0m[2m:[0m Deleted "48c24ee115bc46a084c8da79b5bc3dc2.store"
+[2m2026-03-28T12:01:12.837196Z[0m [32m INFO[0m [2mtantivy::directory::managed_directory[0m[2m:[0m Deleted "48c24ee115bc46a084c8da79b5bc3dc2.idx"
+[2m2026-03-28T12:01:12.837233Z[0m [32m INFO[0m [2mtantivy::directory::managed_directory[0m[2m:[0m Deleted "48c24ee115bc46a084c8da79b5bc3dc2.fieldnorm"
+[2m2026-03-28T12:01:12.837277Z[0m [32m INFO[0m [2mtantivy::directory::managed_directory[0m[2m:[0m Deleted "48c24ee115bc46a084c8da79b5bc3dc2.fast"
+[2m2026-03-28T12:01:12.842748Z[0m [33m WARN[0m [2magent::agent[0m[2m:[0m Failed to retrieve memories: Memory error: Embedding failed: Embedding API returned error: 404 Not Found

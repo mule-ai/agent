@@ -54,6 +54,7 @@ impl Default for SessionReviewConfig {
 }
 
 /// LLM-enhanced session review service
+#[derive(Clone)]
 pub struct LlmEnhancedSessionReview {
     llm_client: Arc<LlmClient>,
     base_url: String,
@@ -156,7 +157,10 @@ Example output:
     /// Parse training examples from LLM JSON response
     fn parse_training_examples(&self, response: &str) -> Vec<TrainingExample> {
         // Try to extract JSON array from response
-        let json_str = self.extract_json(response)?;
+        let json_str = match self.extract_json(response) {
+            Some(s) => s,
+            None => return Vec::new(),
+        };
 
         let parsed: Result<Vec<serde_json::Value>, _> = serde_json::from_str(&json_str);
 
@@ -289,11 +293,6 @@ pub struct SessionAnalysis {
     pub topics_for_research: Vec<String>,
 }
 
-/// Session review service
-#[derive(Clone)]
-pub struct SessionReviewService {
-    config: SessionReviewConfig,
-}
 
 impl SessionReviewService {
     pub fn new() -> Self {

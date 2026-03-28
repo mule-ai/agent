@@ -9,13 +9,14 @@ use crate::services::{BatchTrainingService, MemoryEvictionService, SessionReview
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio_cron_scheduler::{Job, JobScheduler};
 
 /// Scheduler configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SchedulerConfig {
+    /// Enable the scheduler
+    pub enabled: bool,
     /// Enable scheduled batch training
     pub batch_training_enabled: bool,
     /// Cron expression for batch training (default: "0 2 * * *" = 2 AM daily)
@@ -33,11 +34,13 @@ pub struct SchedulerConfig {
 impl Default for SchedulerConfig {
     fn default() -> Self {
         Self {
+            enabled: true,
             batch_training_enabled: true,
             batch_training_schedule: "0 2 * * *".to_string(), // 2 AM daily
             memory_eviction_enabled: true,
             memory_eviction_schedule: "0 0 * * *".to_string(), // Midnight daily
             session_review_enabled: false, // Session review is triggered on session end
+            session_review_schedule: "0 */6 * * *".to_string(), // Every 6 hours
         }
     }
 }
@@ -335,7 +338,7 @@ impl SchedulerService {
     /// Stop the scheduler
     pub async fn stop(&self) -> Result<()> {
         let mut scheduler_guard = self.scheduler.write().await;
-        if let Some(scheduler) = scheduler_guard.take() {
+        if let Some(mut scheduler) = scheduler_guard.take() {
             scheduler
                 .shutdown()
                 .await

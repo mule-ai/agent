@@ -172,6 +172,14 @@ pub struct SchedulerConfig {
     pub memory_eviction_enabled: bool,
     #[serde(default = "default_memory_eviction_schedule")]
     pub memory_eviction_schedule: String,
+    #[serde(default)]
+    pub session_review_enabled: bool,
+    #[serde(default = "default_session_review_schedule")]
+    pub session_review_schedule: String,
+}
+
+fn default_session_review_schedule() -> String {
+    "0 */6 * * *".to_string()
 }
 
 fn default_batch_training_enabled() -> bool { true }
@@ -187,6 +195,8 @@ impl Default for SchedulerConfig {
             batch_training_schedule: "0 2 * * *".to_string(),
             memory_eviction_enabled: true,
             memory_eviction_schedule: "0 0 * * *".to_string(),
+            session_review_enabled: false,
+            session_review_schedule: "0 */6 * * *".to_string(),
         }
     }
 }

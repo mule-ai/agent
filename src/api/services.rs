@@ -95,7 +95,7 @@ pub async fn run_session_review(
             
             // Analyze session
             let analysis = service.analyze_session(&messages);
-            let training_examples = service.generate_training_examples(&messages);
+            let training_examples = service.generate_training_examples(&messages).await;
             let memories = service.generate_memories(&messages);
             
             // Store generated memories
