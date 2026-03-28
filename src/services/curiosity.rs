@@ -286,6 +286,19 @@ impl CuriosityEngine {
         self.stats.read().await.clone()
     }
 
+    /// Wire the internal search learning service to batch training
+    /// This enables curiosity-driven exploration to generate training examples
+    pub async fn wire_to_batch_training(&self, batch_service: crate::services::BatchTrainingService) {
+        self.search_service.set_batch_training_service(batch_service).await;
+        tracing::debug!("Curiosity engine wired to batch training service");
+    }
+
+    /// Get the internal search learning service for wiring (advanced use)
+    #[allow(dead_code)]
+    pub fn get_search_service(&self) -> SearchLearningService {
+        self.search_service.clone()
+    }
+
     /// Detect knowledge gaps from a conversation
     pub async fn detect_gaps(&self, messages: &[crate::models::Message]) -> Vec<KnowledgeGap> {
         let mut detected = Vec::new();

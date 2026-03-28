@@ -482,7 +482,7 @@ pub trait BackgroundService: Send + Sync {
 
 ### Session Review Service
 
-Analyzes completed sessions to generate training data:
+Analyzes completed sessions to generate training data. Session review is automatically triggered when a session ends via the `/sessions/{id}/end` endpoint.
 
 ```rust
 use agi_agent::services::session_review::{SessionReviewService, SessionReviewConfig};
@@ -495,6 +495,9 @@ let service = SessionReviewService::new(
         min_session_length: 2,
         max_sessions_per_run: 10,
         quality_threshold: 0.5,
+        use_llm_enhancement: true,  // LLM-enhanced training data generation
+        llm_base_url: None,
+        llm_model: None,
     },
 );
 
@@ -504,13 +507,14 @@ let result = service.review_session(session_id, &messages).await?;
 
 The service:
 1. Extracts facts and concepts from conversations
-2. Generates training examples from good conversations
+2. Generates training examples from good conversations (LLM-enhanced)
 3. Identifies topics for further research
 4. Moves useful memories to training namespace
+5. Automatically triggered on session end
 
 ### Memory Eviction Service
 
-Manages memory lifecycle with TTL-based eviction:
+Manages memory lifecycle with TTL-based eviction. Can run on a schedule via the Scheduler service.
 
 ```rust
 use agi_agent::services::memory_eviction::{MemoryEvictionService, MemoryEvictionConfig};
@@ -526,11 +530,14 @@ let service = MemoryEvictionService::new(
 
 // Process eviction
 service.process_eviction().await?;
+
+// Get eviction statistics
+let stats = service.get_stats().await;
 ```
 
 ### Search Learning Service
 
-Researches topics using SearXNG when knowledge gaps are detected:
+Researches topics using SearXNG when knowledge gaps are detected. Results are automatically converted to training examples and added to batch training.
 
 ```rust
 use agi_agent::services::search_learning::SearchLearningService;
@@ -541,11 +548,50 @@ let service = SearchLearningService::new(
     embedding_client,
 );
 
-// Research a topic
+// Wire to batch training service
+service.set_batch_training_service(batch_training_service.clone());
+
+// Research a topic (generates training examples automatically)
 let result = service.learn("Rust ownership model").await?;
+
+// Check accumulated training examples
+let count = service.get_training_examples_count().await;
 ```
 
 ---
+
+### Scheduler Service
+
+Cron-based scheduler for automated background tasks:
+
+```rust
+use agi_agent::services::scheduler::{SchedulerService, SchedulerConfig};
+
+let scheduler = SchedulerService::with_services(
+    SchedulerConfig {
+        batch_training_enabled: true,
+        batch_training_schedule: "0 2 * * *".to_string(), // 2 AM daily
+        memory_eviction_enabled: true,
+        memory_eviction_schedule: "0 0 * * *".to_string(), // Midnight
+        session_review_enabled: false, // Triggered on session end
+    },
+    batch_training_service,
+    memory_eviction_service,
+    session_review_service,
+);
+
+// Start the scheduler
+scheduler.start().await?;
+
+// Get statistics
+let stats = scheduler.get_stats().await;
+
+// Manually trigger batch training
+scheduler.trigger_batch_training().await?;
+
+// Stop the scheduler
+scheduler.stop().await?;
+```
 
 ## Training Pipeline
 
@@ -588,24 +634,27 @@ pub fn helpfulness_reward(completion: &str, reference: &str) -> f32 {
 
 ### Batch Training Service
 
-Integrates training module with API:
+Integrates training module with API. Training examples are automatically persisted to disk (`~/.agi/training/examples.jsonl`).
 
 ```rust
 use agi_agent::services::batch_training::{BatchTrainingService, BatchTrainingConfig};
 
 let service = BatchTrainingService::new(config);
 
-// Add training example
+// Add training example (auto-persisted to disk)
 service.add_example(training_example).await?;
 
 // Collect from memory
 service.collect_from_memory().await?;
 
-// Run training
+// Run training (clears examples after success)
 service.train().await?;
 
 // Export as JSONL
 let jsonl = service.export_jsonl().await?;
+
+// Clear all accumulated examples
+service.clear().await;
 ```
 
 ### Model Registry
@@ -729,14 +778,17 @@ pub enum KnowledgeGapReason {
 // Add gap to exploration queue
 engine.queue_gap(gap).await?;
 
-// Process exploration
+// Process exploration (wired to batch training automatically)
 let result = engine.explore(gap_id).await?;
 
 // Process all pending gaps
 engine.process_queue(max_explorations).await?;
+
+// Wire to batch training service
+engine.wire_to_batch_training(batch_training_service).await?;
 ```
 
-Exploration uses Wikipedia and ArXiv to learn about gaps, storing learned concepts in training memory.
+Exploration uses Wikipedia and ArXiv to learn about gaps. Discovered knowledge is automatically stored in training memory and converted to training examples via the wired batch training service.
 
 ### Configuration
 
@@ -957,6 +1009,10 @@ POST /training/batch/filter
 # Model registry
 GET  /training/models/list
 POST /training/models/current
+
+# Scheduler
+GET  /scheduler/stats
+POST /scheduler/trigger
 ```
 
 ### Session Endpoints
@@ -1095,6 +1151,13 @@ epochs = 3
 batch_size = 4
 learning_rate = 1e-4
 lora_rank = 16
+
+[scheduler]
+enabled = true
+batch_training_enabled = true
+batch_training_schedule = "0 2 * * *"  # 2 AM daily
+memory_eviction_enabled = true
+memory_eviction_schedule = "0 0 * * *"  # Midnight daily
 
 [search]
 instance = "https://search.butler.ooo"

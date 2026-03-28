@@ -1,16 +1,27 @@
 //! Session management API endpoints
-//! 
+//!
 //! Provides endpoints for persistent session management
 
 use crate::models::{Session, SessionSummary};
 use axum::{
-    extract::{Path, State},
     Json,
+    extract::{Path, State},
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use super::AppState;
+
+/// Response for session review
+#[derive(Debug, Serialize)]
+pub struct SessionReviewResponse {
+    pub session_id: String,
+    pub reviewed: bool,
+    pub quality_score: f32,
+    pub training_examples_generated: usize,
+    pub facts_extracted: usize,
+    pub concepts_extracted: usize,
+}
 
 /// Response containing session data
 #[derive(Debug, Serialize, Deserialize)]
@@ -43,11 +54,9 @@ impl From<Session> for SessionResponse {
 }
 
 /// List all sessions
-/// 
+///
 /// GET /sessions
-pub async fn list_sessions(
-    State(state): State<Arc<AppState>>,
-) -> Json<Vec<SessionSummary>> {
+pub async fn list_sessions(State(state): State<Arc<AppState>>) -> Json<Vec<SessionSummary>> {
     if let Some(ref store) = state.session_store {
         match store.list_sessions() {
             Ok(sessions) => Json(sessions),
@@ -73,7 +82,7 @@ pub async fn list_sessions(
 }
 
 /// Get a specific session
-/// 
+///
 /// GET /sessions/:id
 pub async fn get_session(
     State(state): State<Arc<AppState>>,
@@ -100,7 +109,7 @@ pub async fn get_session(
 }
 
 /// Delete a session
-/// 
+///
 /// DELETE /sessions/:id
 pub async fn delete_session(
     State(state): State<Arc<AppState>>,
@@ -128,29 +137,101 @@ pub async fn delete_session(
     }))
 }
 
-/// End a session (mark as ended)
-/// 
+/// End a session (mark as ended) and trigger session review
+///
 /// POST /sessions/:id/end
 pub async fn end_session(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Json<serde_json::Value> {
-    let ended = if let Some(ref store) = state.session_store {
+    // First, collect session messages for review before ending
+    let (ended, review_response) = if let Some(ref store) = state.session_store {
         match store.load_session(&id) {
             Ok(Some(mut session)) => {
+                let messages = session.messages.clone();
+
+                // End the session
                 session.end();
-                match store.save_session(&session) {
-                    Ok(_) => true,
+                let save_result = store.save_session(&session);
+
+                // Perform session review (async for LLM enhancement)
+                let review_result = if !messages.is_empty() {
+                    state
+                        .session_review_service
+                        .review_session(&id, &messages)
+                        .await
+                } else {
+                    crate::services::session_review::SessionReviewResult {
+                        session_id: id.clone(),
+                        quality_score: 0.0,
+                        facts_extracted: 0,
+                        concepts_extracted: 0,
+                        training_examples_generated: 0,
+                        memories_moved_to_training: 0,
+                        memories_deleted: 0,
+                        topics_for_research: Vec::new(),
+                    }
+                };
+
+                // Generate and store training examples (LLM-enhanced when available)
+                let examples = state
+                    .session_review_service
+                    .generate_training_examples(&messages)
+                    .await;
+                for example in examples {
+                    state.batch_training_service.add_example(example).await;
+                }
+
+                tracing::info!(
+                    "Session {} review: quality={:.2}, examples={}, facts={}, concepts={}",
+                    id,
+                    review_result.quality_score,
+                    review_result.training_examples_generated,
+                    review_result.facts_extracted,
+                    review_result.concepts_extracted
+                );
+
+                let review_response = SessionReviewResponse {
+                    session_id: id.clone(),
+                    reviewed: true,
+                    quality_score: review_result.quality_score,
+                    training_examples_generated: review_result.training_examples_generated,
+                    facts_extracted: review_result.facts_extracted,
+                    concepts_extracted: review_result.concepts_extracted,
+                };
+
+                match save_result {
+                    Ok(_) => (true, review_response),
                     Err(e) => {
                         tracing::error!("Failed to save ended session {}: {}", id, e);
-                        false
+                        (false, review_response)
                     }
                 }
             }
-            Ok(None) => false,
+            Ok(None) => (
+                false,
+                SessionReviewResponse {
+                    session_id: id.clone(),
+                    reviewed: false,
+                    quality_score: 0.0,
+                    training_examples_generated: 0,
+                    facts_extracted: 0,
+                    concepts_extracted: 0,
+                },
+            ),
             Err(e) => {
                 tracing::error!("Failed to load session {}: {}", id, e);
-                false
+                (
+                    false,
+                    SessionReviewResponse {
+                        session_id: id.clone(),
+                        reviewed: false,
+                        quality_score: 0.0,
+                        training_examples_generated: 0,
+                        facts_extracted: 0,
+                        concepts_extracted: 0,
+                    },
+                )
             }
         }
     } else {
@@ -159,19 +240,79 @@ pub async fn end_session(
         match agent_guard.as_ref() {
             Some(agent) => {
                 if let Some(mut session) = agent.session_manager().get_session(&id) {
+                    let messages = session.messages.clone();
                     session.end();
-                    true
+
+                    // Perform session review (async for LLM enhancement)
+                    let review_result = if !messages.is_empty() {
+                        state
+                            .session_review_service
+                            .review_session(&id, &messages)
+                            .await
+                    } else {
+                        crate::services::session_review::SessionReviewResult {
+                            session_id: id.clone(),
+                            quality_score: 0.0,
+                            facts_extracted: 0,
+                            concepts_extracted: 0,
+                            training_examples_generated: 0,
+                            memories_moved_to_training: 0,
+                            memories_deleted: 0,
+                            topics_for_research: Vec::new(),
+                        }
+                    };
+
+                    // Generate and store training examples (LLM-enhanced when available)
+                    let examples = state
+                        .session_review_service
+                        .generate_training_examples(&messages)
+                        .await;
+                    for example in examples {
+                        state.batch_training_service.add_example(example).await;
+                    }
+
+                    let review_response = SessionReviewResponse {
+                        session_id: id.clone(),
+                        reviewed: true,
+                        quality_score: review_result.quality_score,
+                        training_examples_generated: review_result.training_examples_generated,
+                        facts_extracted: review_result.facts_extracted,
+                        concepts_extracted: review_result.concepts_extracted,
+                    };
+
+                    (true, review_response)
                 } else {
-                    false
+                    (
+                        false,
+                        SessionReviewResponse {
+                            session_id: id.clone(),
+                            reviewed: false,
+                            quality_score: 0.0,
+                            training_examples_generated: 0,
+                            facts_extracted: 0,
+                            concepts_extracted: 0,
+                        },
+                    )
                 }
             }
-            None => false,
+            None => (
+                false,
+                SessionReviewResponse {
+                    session_id: id.clone(),
+                    reviewed: false,
+                    quality_score: 0.0,
+                    training_examples_generated: 0,
+                    facts_extracted: 0,
+                    concepts_extracted: 0,
+                },
+            ),
         }
     };
 
     Json(serde_json::json!({
         "success": ended,
-        "id": id
+        "id": id,
+        "review": review_response
     }))
 }
 
@@ -189,7 +330,7 @@ pub struct CreateSessionResponse {
 }
 
 /// Create a new session
-/// 
+///
 /// POST /sessions
 pub async fn create_session(
     State(state): State<Arc<AppState>>,

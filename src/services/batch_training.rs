@@ -14,6 +14,7 @@ use crate::training::{TrainingDataAccumulator, TrainingPipeline};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -92,12 +93,19 @@ pub struct BatchTrainingService {
     job_history: Arc<RwLock<Vec<TrainingJob>>>,
     /// Current status
     status: Arc<RwLock<BatchTrainingStatus>>,
+    /// Path to persist examples to disk
+    examples_path: PathBuf,
 }
 
 impl BatchTrainingService {
-    /// Create a new batch training service
+    /// Create a new batch training service with default examples path
     pub fn new(training_config: TrainingConfig) -> Self {
-        Self {
+        // Default path: ~/.agi/training/examples.jsonl
+        let examples_path = dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".agi/training/examples.jsonl");
+        
+        let service = Self {
             config: BatchTrainingConfig::default(),
             training_config,
             pipeline: Arc::new(RwLock::new(None)),
@@ -106,13 +114,23 @@ impl BatchTrainingService {
             stats: Arc::new(RwLock::new(BatchTrainingStats::default())),
             job_history: Arc::new(RwLock::new(Vec::new())),
             status: Arc::new(RwLock::new(BatchTrainingStatus::Idle)),
-        }
+            examples_path,
+        };
+        
+        // Load persisted examples on creation
+        service.load_examples();
+        
+        service
     }
 
     /// Create with custom batch training config (for future use)
     #[allow(dead_code)]
     pub fn with_config(training_config: TrainingConfig, config: BatchTrainingConfig) -> Self {
-        Self {
+        let examples_path = dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".agi/training/examples.jsonl");
+        
+        let service = Self {
             config,
             training_config,
             pipeline: Arc::new(RwLock::new(None)),
@@ -121,6 +139,107 @@ impl BatchTrainingService {
             stats: Arc::new(RwLock::new(BatchTrainingStats::default())),
             job_history: Arc::new(RwLock::new(Vec::new())),
             status: Arc::new(RwLock::new(BatchTrainingStatus::Idle)),
+            examples_path,
+        };
+        
+        // Load persisted examples on creation
+        service.load_examples();
+        
+        service
+    }
+    
+    /// Create with custom examples path
+    #[allow(dead_code)]
+    pub fn with_examples_path(training_config: TrainingConfig, examples_path: PathBuf) -> Self {
+        let service = Self {
+            config: BatchTrainingConfig::default(),
+            training_config,
+            pipeline: Arc::new(RwLock::new(None)),
+            accumulator: Arc::new(RwLock::new(TrainingDataAccumulator::new(10000))),
+            memory_store: None,
+            stats: Arc::new(RwLock::new(BatchTrainingStats::default())),
+            job_history: Arc::new(RwLock::new(Vec::new())),
+            status: Arc::new(RwLock::new(BatchTrainingStatus::Idle)),
+            examples_path,
+        };
+        
+        // Load persisted examples on creation
+        service.load_examples();
+        
+        service
+    }
+
+    /// Load examples from disk (called on service creation)
+    fn load_examples(&self) {
+        if !self.examples_path.exists() {
+            tracing::info!("No persisted examples found at {:?}", self.examples_path);
+            return;
+        }
+        
+        match std::fs::read_to_string(&self.examples_path) {
+            Ok(content) => {
+                let loaded: Vec<TrainingExample> = content
+                    .lines()
+                    .filter_map(|line| {
+                        if line.trim().is_empty() {
+                            return None;
+                        }
+                        serde_json::from_str(line).ok()
+                    })
+                    .collect();
+                
+                let count = loaded.len();
+                if count > 0 {
+                    // Use try_write to avoid blocking
+                    let mut accumulator = self.accumulator.try_write();
+                    if let Ok(mut acc) = accumulator {
+                        for example in loaded {
+                            acc.add(example);
+                        }
+                        tracing::info!("Loaded {} persisted examples from {:?}", count, self.examples_path);
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to load persisted examples: {}", e);
+            }
+        }
+    }
+
+    /// Save examples to disk (called after adding examples)
+    async fn save_examples(&self) {
+        let accumulator = self.accumulator.read().await;
+        let examples = accumulator.examples();
+        
+        if examples.is_empty() {
+            // Remove file if no examples
+            if self.examples_path.exists() {
+                if let Err(e) = std::fs::remove_file(&self.examples_path) {
+                    tracing::warn!("Failed to remove empty examples file: {}", e);
+                }
+            }
+            return;
+        }
+        
+        // Create parent directory if needed
+        if let Some(parent) = self.examples_path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                tracing::error!("Failed to create examples directory: {}", e);
+                return;
+            }
+        }
+        
+        // Write JSONL
+        let jsonl: String = examples
+            .iter()
+            .map(|e| serde_json::to_string(e).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        
+        if let Err(e) = std::fs::write(&self.examples_path, jsonl) {
+            tracing::error!("Failed to save examples to {:?}: {}", self.examples_path, e);
+        } else {
+            tracing::debug!("Saved {} examples to {:?}", examples.len(), self.examples_path);
         }
     }
 
@@ -274,6 +393,11 @@ impl BatchTrainingService {
         
         let mut stats = self.stats.write().await;
         stats.examples_collected += 1;
+        
+        // Persist to disk
+        drop(accumulator);
+        drop(stats);
+        self.save_examples().await;
     }
 
     /// Get the number of accumulated examples
@@ -327,6 +451,10 @@ impl BatchTrainingService {
                     
                     let mut status = self.status.write().await;
                     *status = BatchTrainingStatus::Completed;
+                    
+                    // Clear persisted examples after successful training
+                    drop(stats);
+                    self.clear().await;
                 }
                 Err(_) => {
                     stats.status = "failed".to_string();
@@ -418,6 +546,15 @@ impl BatchTrainingService {
         
         let mut stats = self.stats.write().await;
         stats.examples_collected = 0;
+        
+        // Also remove persisted file
+        drop(accumulator);
+        drop(stats);
+        if self.examples_path.exists() {
+            if let Err(e) = std::fs::remove_file(&self.examples_path) {
+                tracing::warn!("Failed to remove examples file: {}", e);
+            }
+        }
     }
 
     /// Reset to idle status (for future use)
@@ -439,6 +576,7 @@ impl Clone for BatchTrainingService {
             stats: self.stats.clone(),
             job_history: self.job_history.clone(),
             status: self.status.clone(),
+            examples_path: self.examples_path.clone(),
         }
     }
 }
@@ -478,7 +616,13 @@ mod tests {
         use crate::models::TrainingExample;
         
         let training_config = TrainingConfig::default();
-        let service = BatchTrainingService::new(training_config);
+        let service = BatchTrainingService::with_examples_path(
+            training_config,
+            std::env::temp_dir().join("agi_test_examples_1.jsonl"),
+        );
+        
+        // Clear any existing data
+        service.clear().await;
         
         let example = TrainingExample::new("Test prompt".to_string(), "Test completion".to_string());
         service.add_example(example).await;
@@ -508,7 +652,13 @@ mod tests {
         use crate::models::TrainingExample;
         
         let training_config = TrainingConfig::default();
-        let service = BatchTrainingService::new(training_config);
+        let service = BatchTrainingService::with_examples_path(
+            training_config,
+            std::env::temp_dir().join("agi_test_examples_2.jsonl"),
+        );
+        
+        // Clear any existing data first
+        service.clear().await;
         
         let example = TrainingExample::new("Test prompt".to_string(), "Test completion".to_string());
         service.add_example(example).await;

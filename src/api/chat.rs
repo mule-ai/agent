@@ -7,6 +7,7 @@ use crate::models::{Message, Role};
 use crate::services::{
     CuriosityEngine, MemoryEvictionService, SearchLearningService, SessionReviewService, 
     OnlineLearningService, SelfImproveEngine, TheoryOfMindEngine, BatchTrainingService,
+    SchedulerService,
 };
 use crate::tools::ToolRegistry;
 use axum::{
@@ -37,6 +38,7 @@ pub struct AppState {
     pub self_improve_engine: Arc<SelfImproveEngine>,
     pub theory_of_mind_engine: Arc<TheoryOfMindEngine>,
     pub batch_training_service: Arc<BatchTrainingService>,
+    pub scheduler_service: Arc<SchedulerService>,
     pub session_store: Option<Arc<crate::agent::SessionStore>>,
     // External knowledge sources
     pub wikipedia: WikipediaClient,

@@ -17,6 +17,7 @@ pub mod online_learning;
 pub mod self_improve;
 pub mod theory_of_mind;
 pub mod batch_training;
+pub mod scheduler;
 
 pub use session_review::SessionReviewService;
 pub use memory_eviction::MemoryEvictionService;
@@ -32,6 +33,7 @@ pub use theory_of_mind::{
     ToMAnalysis, MessageContext,
 };
 pub use batch_training::BatchTrainingService;
+pub use scheduler::{SchedulerService, SchedulerConfig, SchedulerStats};
 
 use std::sync::Arc;
 use tokio::sync::RwLock;

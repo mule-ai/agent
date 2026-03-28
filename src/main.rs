@@ -18,7 +18,7 @@ use anyhow::Context;
 use agent::{Agent, AgentConfig, SessionStore};
 use api::chat::AppState;
 use memory::{EmbeddingClient, SqliteMemoryStore};
-use services::{CuriosityEngine, MemoryEvictionService, SearchLearningService, ServiceManager, SessionReviewService, OnlineLearningService, SelfImproveEngine, TheoryOfMindEngine, BatchTrainingService};
+use services::{CuriosityEngine, MemoryEvictionService, SearchLearningService, ServiceManager, SessionReviewService, OnlineLearningService, SelfImproveEngine, TheoryOfMindEngine, BatchTrainingService, SchedulerService, SchedulerConfig};
 use std::sync::Arc;
 use tools::ToolRegistry;
 use tower_http::cors::{Any, CorsLayer};
@@ -140,6 +140,9 @@ fn create_router(state: Arc<AppState>) -> axum::Router {
         .route("/tom/clear", axum::routing::post(api::clear_user_model))
         .route("/tom/trust", axum::routing::post(api::update_trust))
         .route("/tom/intention", axum::routing::post(api::satisfy_intention))
+        // Scheduler endpoints (TASK 5)
+        .route("/scheduler/stats", axum::routing::get(api::scheduler_stats))
+        .route("/scheduler/trigger", axum::routing::post(api::scheduler_trigger_training))
         .with_state(state)
         .layer(cors)
         .layer(TraceLayer::new_for_http())
@@ -194,17 +197,55 @@ async fn main() -> anyhow::Result<()> {
     let tool_registry = Arc::new(ToolRegistry::default_registry());
     tracing::info!("Tool registry initialized with {} tools", tool_registry.list_tools().len());
 
-    // Create background services
+    // Create batch training service first (so search learning can reference it)
+    let batch_training_service = Arc::new(BatchTrainingService::new(config.training.clone()));
+    
+    // Create other background services first (needed for scheduler)
     let service_manager = Arc::new(ServiceManager::new());
     let session_review_service = Arc::new(SessionReviewService::new());
     let memory_eviction_service = Arc::new(MemoryEvictionService::new());
+    
+    // Create scheduler service for automated tasks with all services wired up
+    let scheduler_config = crate::services::SchedulerConfig {
+        enabled: config.scheduler.enabled,
+        batch_training_enabled: config.scheduler.batch_training_enabled,
+        batch_training_schedule: config.scheduler.batch_training_schedule.clone(),
+        memory_eviction_enabled: config.scheduler.memory_eviction_enabled,
+        memory_eviction_schedule: config.scheduler.memory_eviction_schedule.clone(),
+        session_review_enabled: config.scheduler.session_review_enabled,
+        session_review_schedule: config.scheduler.session_review_schedule.clone(),
+    };
+    let scheduler_service = Arc::new(SchedulerService::with_services(
+        scheduler_config,
+        batch_training_service.clone(),
+        memory_eviction_service.clone(),
+        session_review_service.clone(),
+    ));
+    
+    // Create search learning service and wire it to batch training
     let search_learning_service = Arc::new(SearchLearningService::new());
+    
+    // Wire search learning to batch training service
+    let batch_service_clone = (*batch_training_service).clone();
+    tokio::spawn(async move {
+        // Wait briefly for services to be ready
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        search_learning_service.set_batch_training_service(batch_service_clone).await;
+    });
+    
     let curiosity_engine = Arc::new(CuriosityEngine::new());
     let online_learning_service = Arc::new(OnlineLearningService::new());
     let self_improve_engine = Arc::new(SelfImproveEngine::new(Default::default()));
     let theory_of_mind_engine = Arc::new(TheoryOfMindEngine::new(Default::default()));
-    let batch_training_service = Arc::new(BatchTrainingService::new(config.training.clone()));
-    tracing::info!("Background services initialized (Curiosity Engine v0.1, Online Learning v0.1, Self-Improve v0.1, Theory of Mind v0.1, Batch Training v0.1)");
+    
+    // Wire curiosity engine to batch training service for automatic training data generation
+    let batch_service_for_curiosity = (*batch_training_service).clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
+        curiosity_engine.wire_to_batch_training(batch_service_for_curiosity).await;
+    });
+    
+    tracing::info!("Background services initialized (Search Learning v0.1, Batch Training v0.1, Scheduler v0.2, Curiosity Engine v0.1, Online Learning v0.1, Self-Improve v0.1, Theory of Mind v0.1)");
 
     // Create agent
     let agent_config = AgentConfig {
@@ -260,6 +301,7 @@ async fn main() -> anyhow::Result<()> {
         self_improve_engine,
         theory_of_mind_engine,
         batch_training_service,
+        scheduler_service,
         session_store,
         wikipedia,
         arxiv,
@@ -267,6 +309,13 @@ async fn main() -> anyhow::Result<()> {
         knowledge_config,
         model_config: Arc::new(tokio::sync::RwLock::new(config.model.clone())),
     });
+
+    // Start the scheduler service
+    if config.scheduler.enabled {
+        if let Err(e) = scheduler_service.start().await {
+            tracing::error!("Failed to start scheduler: {}", e);
+        }
+    }
 
     tracing::info!("External knowledge base initialized (Wikipedia, ArXiv, Web fetcher)");
 

@@ -206,6 +206,8 @@ curl -X DELETE http://localhost:8080/memories/{id}
 
 ### Training
 
+Training examples are automatically generated from sessions, search learning, and curiosity-driven exploration. They are persisted to `~/.agi/training/examples.jsonl` and can be exported for external training.
+
 ```bash
 # Trigger training
 curl -X POST http://localhost:8080/training/trigger
@@ -232,6 +234,16 @@ curl http://localhost:8080/training/models/list
 curl -X POST http://localhost:8080/training/models/current \
   -H "Content-Type: application/json" \
   -d '{"model_id": "qwen3:8b-v20260329120000"}'
+```
+
+### Scheduler
+
+```bash
+# Get scheduler statistics
+curl http://localhost:8080/scheduler/stats
+
+# Manually trigger batch training
+curl -X POST http://localhost:8080/scheduler/trigger
 ```
 
 ### Learned Concepts
@@ -268,6 +280,8 @@ curl -X POST http://localhost:8080/model/update \
 
 ### Sessions
 
+Sessions automatically trigger review when ended, which extracts facts, concepts, and generates training examples.
+
 ```bash
 # List all sessions
 curl http://localhost:8080/sessions
@@ -280,7 +294,7 @@ curl -X POST http://localhost:8080/sessions \
 # Get a specific session
 curl http://localhost:8080/sessions/{id}
 
-# End a session (triggers session review)
+# End a session (triggers session review automatically)
 curl -X POST http://localhost:8080/sessions/{id}/end
 
 # Delete a session
@@ -514,14 +528,42 @@ Tools are exposed via OpenAI function calling schema and results are automatical
 
 | Service | Description |
 |---------|-------------|
-| `SessionReview` | Analyzes conversations, extracts facts/concepts, generates training examples |
+| `SessionReview` | Analyzes conversations on session end, extracts facts/concepts, generates training examples |
 | `MemoryEviction` | Manages memory lifecycle, applies eviction policies |
-| `SearchLearning` | Researches topics using SearXNG |
-| `BatchTraining` | GRPO training pipeline with model registry |
+| `SearchLearning` | Researches topics using SearXNG, generates training examples |
+| `BatchTraining` | GRPO training pipeline with model registry, persists examples to disk |
 | `OnlineLearning` | Continuous RL from tool interactions using experience replay |
-| `Curiosity` | Autonomous exploration of knowledge gaps |
+| `Curiosity` | Autonomous exploration of knowledge gaps, wired to batch training |
 | `SelfImprove` | Analyzes code patterns, generates improvements |
 | `TheoryOfMind` | Models user mental state for personalized responses |
+| `Scheduler` | Cron-based scheduler for automated background tasks (batch training, eviction, review) |
+
+### Scheduler
+
+The scheduler service runs automated background tasks based on configurable cron schedules:
+
+```bash
+# Get scheduler statistics
+curl http://localhost:8080/scheduler/stats
+
+# Manually trigger batch training
+curl -X POST http://localhost:8080/scheduler/trigger
+```
+
+**Default Schedule:**
+- Batch Training: 2 AM daily (`0 2 * * *`)
+- Memory Eviction: Midnight daily (`0 0 * * *`)
+- Session Review: Every 6 hours (`0 */6 * * *`)
+
+**Configuration (`agent.toml`):**
+```toml
+[scheduler]
+enabled = true
+batch_training_enabled = true
+batch_training_schedule = "0 2 * * *"
+memory_eviction_enabled = true
+memory_eviction_schedule = "0 0 * * *"
+```
 
 ## Multi-Agent Teams
 
@@ -565,14 +607,49 @@ helpfulness_reward(completion, reference) {
 
 ### Training Flow
 
+Training examples are automatically generated from multiple sources and persisted to disk:
+
 ```
-Session → SessionReview → Training Examples → BatchTraining → Model Registry
-                                      ↓
-                              Training Namespace
-                                      ↓
-                              Scheduled GRPO Training (via unsloth)
-                                      ↓
-                              LoRA Adapter → Hot-Swap Ready
+┌─────────────────┐
+│  User Sessions  │
+│  (Conversations)│
+└────────┬────────┘
+         │ Session End
+         ▼
+┌─────────────────┐
+│ Session Review  │──────► Facts & Concepts extracted
+│ (LLM-enhanced)  │       Training examples generated
+└────────┬────────┘       Mem: ~/.agi/training/examples.jsonl
+         │
+         ▼
+┌─────────────────┐
+│ Search Learning │──────► Research results
+│ (SearXNG)      │       Training examples generated
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ Curiosity Engine│──────► Knowledge gaps explored
+│ (Autonomous)    │       Training examples generated
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────────┐
+│           BatchTrainingService                  │
+│  Examples persisted: ~/.agi/training/examples.jsonl
+└────────┬────────────────────────────────────────┘
+         │
+         │ Cron (default: 2 AM)
+         ▼
+┌─────────────────┐
+│ Scheduled GRPO │
+│ Training       │──────► LoRA Adapter generated
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ Model Registry  │──────► Hot-swap ready
+└─────────────────┘
 ```
 
 ### Online Learning

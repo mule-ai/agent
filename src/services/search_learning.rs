@@ -5,8 +5,9 @@
 //! - Search for relevant information using SearXNG
 //! - Fetch and summarize content
 //! - Extract key concepts and add to training memory
+//! - Generate training examples from search results
 
-use crate::models::{Memory, MemoryType};
+use crate::models::{Memory, MemoryType, TrainingExample, TrainingSource};
 use anyhow::Result;
 use chrono::Utc;
 use reqwest::Client;
@@ -124,6 +125,8 @@ pub struct SearchLearningService {
     client: Client,
     stats: Arc<RwLock<SearchLearningStats>>,
     pending_topics: Arc<RwLock<Vec<ResearchTopic>>>,
+    /// Reference to batch training service for generating training examples
+    batch_training_service: Arc<tokio::sync::RwLock<Option<crate::services::BatchTrainingService>>>,
 }
 
 impl SearchLearningService {
@@ -142,12 +145,115 @@ impl SearchLearningService {
             client,
             stats: Arc::new(RwLock::new(SearchLearningStats::default())),
             pending_topics: Arc::new(RwLock::new(Vec::new())),
+            batch_training_service: Arc::new(tokio::sync::RwLock::new(None)),
         }
     }
 
     /// Get service statistics
     pub async fn get_stats(&self) -> SearchLearningStats {
         self.stats.read().await.clone()
+    }
+
+    /// Set the batch training service reference for generating training examples
+    pub async fn set_batch_training_service(&self, service: crate::services::BatchTrainingService) {
+        let mut batch = self.batch_training_service.write().await;
+        *batch = Some(service);
+        tracing::debug!("Batch training service connected to search learning");
+    }
+
+    /// Get the number of training examples generated
+    pub async fn get_training_examples_count(&self) -> usize {
+        let batch = self.batch_training_service.read().await;
+        if let Some(ref service) = *batch {
+            service.example_count().await
+        } else {
+            0
+        }
+    }
+
+    /// Generate training examples from search results
+    pub fn generate_training_examples(&self, topic: &ResearchTopic, results: &[SearchResult]) -> Vec<TrainingExample> {
+        let mut examples = Vec::new();
+
+        // Generate a Q&A pair from the topic and summary of results
+        if !results.is_empty() {
+            let prompt = format!("Tell me about {}", topic.topic);
+            
+            // Create a summary from all result snippets
+            let summary_parts: Vec<String> = results
+                .iter()
+                .filter_map(|r| {
+                    if r.snippet.is_empty() {
+                        r.summary.clone()
+                    } else {
+                        Some(r.snippet.clone())
+                    }
+                })
+                .take(3)
+                .collect();
+
+            let completion = if !summary_parts.is_empty() {
+                summary_parts.join(" ")
+            } else {
+                format!("Information about {} was found.", topic.topic)
+            };
+
+            let example = TrainingExample {
+                id: Uuid::new_v4().to_string(),
+                prompt,
+                completion,
+                reasoning: format!(
+                    "Researched from {} sources. Quality: Research-derived content from web search.",
+                    results.len()
+                ),
+                reward: 0.8, // Research-derived content is high quality
+                source: TrainingSource::Search,
+                created_at: Utc::now(),
+                quality_score: 0.8,
+                used_in_training: false,
+            };
+            examples.push(example);
+        }
+
+        // Also generate examples from individual results with detailed content
+        for result in results.iter().filter(|r| r.content.is_some() || r.summary.is_some()) {
+            let prompt = format!("What is {}?", result.title);
+            
+            let completion = result.summary.clone()
+                .or_else(|| result.content.as_ref().map(|c| c.chars().take(500).collect()))
+                .unwrap_or_else(|| result.snippet.clone());
+
+            if completion.len() > 20 {
+                let example = TrainingExample {
+                    id: Uuid::new_v4().to_string(),
+                    prompt,
+                    completion: completion.chars().take(500).collect(),
+                    reasoning: format!(
+                        "Generated from search result: {}. Source: {}",
+                        result.title, result.url
+                    ),
+                    reward: 0.75, // Slightly lower than aggregated result
+                    source: TrainingSource::Search,
+                    created_at: Utc::now(),
+                    quality_score: 0.75,
+                    used_in_training: false,
+                };
+                examples.push(example);
+            }
+        }
+
+        examples
+    }
+
+    /// Add training examples to the batch training service
+    pub async fn add_training_examples(&self, examples: Vec<TrainingExample>) {
+        let batch = self.batch_training_service.read().await;
+        if let Some(ref service) = *batch {
+            for example in examples {
+                service.add_example(example).await;
+            }
+            tracing::info!("Added training examples to batch training service");
+        }
     }
 
     /// Add a topic to research
@@ -369,9 +475,20 @@ impl SearchLearningService {
         processed
     }
 
-    /// Learn from a topic and generate memories
+    /// Learn from a topic and generate memories and training examples
     pub async fn learn_from_topic(&self, topic: &ResearchTopic) -> Vec<Memory> {
-        self.extract_concepts(&topic.results).await
+        // Extract concepts and create memories
+        let memories = self.extract_concepts(&topic.results).await;
+        
+        // Generate training examples from the search results
+        let examples = self.generate_training_examples(topic, &topic.results);
+        
+        // Add training examples to batch training service
+        if !examples.is_empty() {
+            self.add_training_examples(examples).await;
+        }
+        
+        memories
     }
 }
 
@@ -531,5 +648,113 @@ mod tests {
         assert_eq!(memories.len(), 2); // One from snippet, one from content
         assert_eq!(memories[0].namespace, "training");
         assert_eq!(memories[0].memory_type, MemoryType::Concept);
+    }
+
+    #[test]
+    fn test_generate_training_examples() {
+        let service = SearchLearningService::new();
+        
+        let topic = ResearchTopic::new(
+            "Rust programming".to_string(),
+            "User asked about Rust".to_string(),
+        );
+        
+        let results = vec![
+            SearchResult {
+                title: "Rust Programming Guide".to_string(),
+                url: "https://rust.example.com".to_string(),
+                snippet: "Rust is a systems programming language focused on safety.".to_string(),
+                content: Some("Rust provides memory safety without garbage collection.".to_string()),
+                summary: Some("Rust is a safe, concurrent, practical language.".to_string()),
+            },
+            SearchResult {
+                title: "Rust vs Other Languages".to_string(),
+                url: "https://compare.example.com".to_string(),
+                snippet: "Rust offers unique ownership and borrowing features.".to_string(),
+                content: None,
+                summary: Some("Rust's ownership model prevents data races.".to_string()),
+            },
+        ];
+        
+        let examples = service.generate_training_examples(&topic, &results);
+        
+        // Should generate at least one aggregated example plus individual examples
+        assert!(!examples.is_empty());
+        
+        // Check first example (aggregated)
+        let first = &examples[0];
+        assert!(first.prompt.contains("Rust programming"));
+        assert!(first.source == crate::models::TrainingSource::Search);
+        assert!(first.reward >= 0.7); // Research content is high quality
+        assert!(first.quality_score >= 0.7);
+    }
+
+    #[test]
+    fn test_generate_training_examples_empty_results() {
+        let service = SearchLearningService::new();
+        
+        let topic = ResearchTopic::new(
+            "Unknown topic".to_string(),
+            "User asked about unknown topic".to_string(),
+        );
+        
+        let results: Vec<SearchResult> = vec![];
+        
+        let examples = service.generate_training_examples(&topic, &results);
+        
+        // Empty results should produce no examples
+        assert!(examples.is_empty());
+    }
+
+    #[test]
+    fn test_generate_training_examples_with_summary() {
+        let service = SearchLearningService::new();
+        
+        let topic = ResearchTopic::new(
+            "Machine Learning".to_string(),
+            "User asked about ML".to_string(),
+        );
+        
+        let results = vec![
+            SearchResult {
+                title: "ML Basics".to_string(),
+                url: "https://ml.example.com".to_string(),
+                snippet: "".to_string(), // Empty snippet
+                content: None,
+                summary: Some("Machine learning is a subset of AI.".to_string()),
+            },
+        ];
+        
+        let examples = service.generate_training_examples(&topic, &results);
+        
+        // Should still generate example from summary when snippet is empty
+        assert!(!examples.is_empty());
+    }
+
+    #[test]
+    fn test_training_examples_source() {
+        let service = SearchLearningService::new();
+        
+        let topic = ResearchTopic::new(
+            "Python".to_string(),
+            "User asked".to_string(),
+        );
+        
+        let results = vec![
+            SearchResult {
+                title: "Python Guide".to_string(),
+                url: "https://python.example.com".to_string(),
+                snippet: "Python is a versatile programming language.".to_string(),
+                content: None,
+                summary: None,
+            },
+        ];
+        
+        let examples = service.generate_training_examples(&topic, &results);
+        
+        // All examples should have Search source
+        for example in &examples {
+            assert_eq!(example.source, crate::models::TrainingSource::Search);
+        }
     }
 }

@@ -1225,3 +1225,73 @@ pub async fn satisfy_intention(
         }),
     }
 }
+
+// ============================================
+// Scheduler API Endpoints (TASK 5: Scheduled Batch Training)
+// ============================================
+
+use crate::services::scheduler::{SchedulerStats, SchedulerConfig};
+
+/// Scheduler statistics response
+#[derive(Debug, Clone, Serialize)]
+pub struct SchedulerStatusResponse {
+    pub enabled: bool,
+    pub config: SchedulerConfig,
+    pub stats: SchedulerStats,
+}
+
+/// Get scheduler statistics
+pub async fn scheduler_stats(
+    State(state): State<Arc<AppState>>,
+) -> Json<SchedulerStatusResponse> {
+    let scheduler = &state.scheduler_service;
+    let stats = scheduler.get_stats().await;
+    let config = scheduler.config().clone();
+    
+    Json(SchedulerStatusResponse {
+        enabled: config.enabled,
+        config,
+        stats,
+    })
+}
+
+/// Request to trigger batch training manually
+#[derive(Debug, Deserialize)]
+pub struct TriggerTrainingRequest {
+    #[allow(dead_code)]
+    pub force: Option<bool>,
+}
+
+/// Trigger training response
+#[derive(Debug, Clone, Serialize)]
+pub struct TriggerTrainingResponse {
+    pub success: bool,
+    pub message: String,
+    pub examples_count: usize,
+}
+
+/// Manually trigger batch training (bypass schedule)
+pub async fn scheduler_trigger_training(
+    State(state): State<Arc<AppState>>,
+    Json(_req): Json<TriggerTrainingRequest>,
+) -> Json<TriggerTrainingResponse> {
+    let scheduler = &state.scheduler_service;
+    
+    match scheduler.trigger_batch_training().await {
+        Ok(()) => {
+            let examples = state.batch_training_service.example_count().await;
+            Json(TriggerTrainingResponse {
+                success: true,
+                message: "Batch training triggered successfully".to_string(),
+                examples_count: examples,
+            })
+        }
+        Err(e) => {
+            Json(TriggerTrainingResponse {
+                success: false,
+                message: e.to_string(),
+                examples_count: 0,
+            })
+        }
+    }
+}

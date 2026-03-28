@@ -48,6 +48,8 @@ lazy_static = "1.4"
 lru = "0.12"
 regex = "1"
 itertools = "0.13"
+dirs = "5"
+tokio-cron-scheduler = "0.10"
 
 [dev-dependencies]
 tokio-test = "0.4"

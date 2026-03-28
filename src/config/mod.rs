@@ -159,6 +159,38 @@ impl Default for TrainingConfig {
     }
 }
 
+/// Scheduler configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SchedulerConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_batch_training_enabled")]
+    pub batch_training_enabled: bool,
+    #[serde(default = "default_batch_training_schedule")]
+    pub batch_training_schedule: String,
+    #[serde(default = "default_memory_eviction_enabled")]
+    pub memory_eviction_enabled: bool,
+    #[serde(default = "default_memory_eviction_schedule")]
+    pub memory_eviction_schedule: String,
+}
+
+fn default_batch_training_enabled() -> bool { true }
+fn default_batch_training_schedule() -> String { "0 2 * * *".to_string() }
+fn default_memory_eviction_enabled() -> bool { true }
+fn default_memory_eviction_schedule() -> String { "0 0 * * *".to_string() }
+
+impl Default for SchedulerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            batch_training_enabled: true,
+            batch_training_schedule: "0 2 * * *".to_string(),
+            memory_eviction_enabled: true,
+            memory_eviction_schedule: "0 0 * * *".to_string(),
+        }
+    }
+}
+
 /// Online Learning configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OnlineLearningConfig {
@@ -236,6 +268,8 @@ pub struct AppConfig {
     pub training: TrainingConfig,
     #[serde(default)]
     pub online_learning: OnlineLearningConfig,
+    #[serde(default)]
+    pub scheduler: SchedulerConfig,
     pub summarization: SummarizationConfig,
 }
 
@@ -248,6 +282,7 @@ impl Default for AppConfig {
             search: SearchConfig::default(),
             training: TrainingConfig::default(),
             online_learning: OnlineLearningConfig::default(),
+            scheduler: SchedulerConfig::default(),
             summarization: SummarizationConfig::default(),
         }
     }
