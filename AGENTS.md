@@ -1,18 +1,17 @@
 # AGI Agent System Documentation
 
-A comprehensive guide to the AGI Agent system architecture, components, and extension points.
-
 ## Table of Contents
 
 1. [System Overview](#system-overview)
-2. [Agent Core](#agent-core)
-3. [Memory System](#memory-system)
-4. [Tool System](#tool-system)
-5. [Background Services](#background-services)
-6. [Training Pipeline](#training-pipeline)
-7. [API Reference](#api-reference)
-8. [Configuration](#configuration)
-9. [Extending the System](#extending-the-system)
+2. [Architecture](#architecture)
+3. [Agent Core](#agent-core)
+4. [Memory System](#memory-system)
+5. [Tool System](#tool-system)
+6. [Background Services](#background-services)
+7. [Training Pipeline](#training-pipeline)
+8. [API Reference](#api-reference)
+9. [Configuration](#configuration)
+10. [Extending the System](#extending-the-system)
 
 ---
 
@@ -22,43 +21,57 @@ The AGI Agent is built as a collection of cooperating components:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                           User Applications                                    │
-│                    (Chat, CLI, Custom Integrations)                           │
+│                           Python CLI (./agi)                                 │
+│                    Simple client - calls Agent API                           │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                          OpenAI-Compatible API                                │
-│                       /v1/chat/completions, /v1/models                      │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                      │
-                                      ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                             Agent Core                                         │
+│                         Agent API (port 8080)                               │
+│                      Rust HTTP Server (Axum)                                │
 │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────────────┐ │
-│  │ Session Manager │  │ Reasoning Engine│  │     LLM Client              │ │
-│  │ (State)        │  │ (Thinking)     │  │ (Ollama/OpenAI)            │ │
+│  │ Session Manager │  │  Reasoning     │  │      LLM Client            │ │
+│  │ (State)        │  │   Engine       │  │      → llama.cpp           │ │
 │  └─────────────────┘  └─────────────────┘  └─────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────────────────┘
-                    │                       │
-                    ▼                       ▼
-        ┌───────────────────┐     ┌───────────────────────┐
-        │   Memory System   │     │     Tool System       │
-        │ (Tantivy/SQLite) │     │ (Search, Bash, Files) │
-        └───────────────────┘     └───────────────────────┘
-                    │
-                    ▼
-        ┌───────────────────────────────────────────────┐
-        │              Background Services                  │
-        │  (Session Review, Search Learning, Eviction)     │
-        └───────────────────────────────────────────────┘
-                    │
-                    ▼
-        ┌───────────────────────────────────────────────┐
-        │             Training Pipeline                     │
-        │           (GRPO / LoRA / Candle)                │
-        └───────────────────────────────────────────────┘
+                                      │
+                                      ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        llama.cpp Server (port 8081)                         │
+│                      Qwen3.5-4B-GGUF:Q8_0 Model                            │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## Architecture
+
+### Python CLI
+
+The Python CLI (`./agi` or `python3 cli.py`) is a simple client that:
+
+- Calls the Agent API on port 8080
+- Auto-detects if Agent is running
+- Falls back to direct llama.cpp if Agent unavailable
+- Provides streaming chat interface
+
+### Agent API
+
+The Rust Agent provides:
+
+- **Session Management**: Track conversation state
+- **Memory Storage**: SQLite + Tantivy for persistent memory
+- **LLM Client**: Calls llama.cpp for inference
+- **Training Pipeline**: GRPO/LoRA fine-tuning support
+
+### llama.cpp Server
+
+Handles LLM inference:
+
+- Serves GGUF quantized models
+- OpenAI-compatible API endpoint
+- Streaming support
+- CUDA acceleration
 
 ---
 
@@ -71,10 +84,10 @@ The main `Agent` is defined in `src/agent/mod.rs`:
 ```rust
 pub struct Agent {
     config: AgentConfig,
-    llm_client: LLMClient,
+    llm_client: LlmClient,
     memory_retriever: Option<Arc<MemoryRetriever>>,
     tool_registry: Arc<ToolRegistry>,
-    session_manager: Arc<SessionManager>,
+    session_manager: SessionManager,
     reasoning_engine: ReasoningEngine,
 }
 ```
@@ -110,11 +123,8 @@ let messages = vec![
     Message::user("What is Rust?"),
 ];
 
-// Non-streaming
-let response = agent.chat(messages, false).await?;
-
-// Streaming
-let response = agent.chat(messages, true).await?;
+// Chat with the model
+let response = agent.chat(messages).await?;
 ```
 
 ---
@@ -129,7 +139,7 @@ The memory system uses a two-tier approach:
 ┌─────────────────────────────────────────────────────────────┐
 │                    Retrieval Namespace                        │
 │  Purpose: Short-term context for conversations               │
-│  Storage: SQLite + Tantivy + In-memory cache               │
+│  Storage: SQLite + Tantivy                                  │
 │  TTL: 24 hours (configurable)                              │
 │  Eviction: Delete or move to training                      │
 └─────────────────────────────────────────────────────────────┘
@@ -138,7 +148,7 @@ The memory system uses a two-tier approach:
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                    Training Namespace                        │
-│  Purpose: Long-term knowledge for RL training               │
+│  Purpose: Long-term knowledge for RL training                 │
 │  Storage: SQLite (persistent)                               │
 │  TTL: Never (accumulates over time)                        │
 │  Usage: Training examples for GRPO                          │
@@ -154,7 +164,6 @@ pub trait MemoryStore: Send + Sync {
     fn store(&self, memory: &Memory) -> Result<()>;
     fn get(&self, id: &str) -> Result<Option<Memory>>;
     fn query(&self, embedding: &[f32], namespace: &str, limit: usize, min_score: f32) -> Result<Vec<SearchResult>>;
-    fn query_text(&self, query: &str, namespace: &str, limit: usize) -> Result<Vec<SearchResult>>;
     fn update(&self, memory: &Memory) -> Result<()>;
     fn delete(&self, id: &str) -> Result<()>;
     fn list(&self, namespace: &str, limit: usize) -> Result<Vec<Memory>>;
@@ -174,14 +183,10 @@ let client = EmbeddingClient::new(EmbeddingClientConfig {
     model: "nomic-embed-text".to_string(),
     dimensions: 768,
     batch_size: 32,
-    api_key: None,
 });
 
 // Single embedding
 let embedding = client.embed("Rust is a systems language").await?;
-
-// Batch embeddings
-let embeddings = client.embed_batch(&texts).await?;
 ```
 
 ### Memory Retriever
@@ -194,7 +199,6 @@ use agi_agent::memory::retrieval::MemoryRetriever;
 let retriever = MemoryRetriever::new(store, client, RetrievalConfig {
     max_memories: 10,
     min_similarity: 0.6,
-    ..Default::default()
 });
 
 // Query memories
@@ -212,7 +216,6 @@ pub enum MemoryType {
     Concept,        // Conceptual knowledge (move to training)
     Conversation,   // Conversation transcripts
     ToolResult,     // Results from tool execution
-    LearnedPattern, // Learned patterns/behaviors
 }
 ```
 
@@ -235,7 +238,6 @@ match policy.evaluate(&memory) {
     EvictionDecision::Keep => { /* stay in retrieval */ }
     EvictionDecision::EvictToTraining => { /* move to training */ }
     EvictionDecision::Delete => { /* remove entirely */ }
-    EvictionDecision::MakePersistent => { /* never evict */ }
 }
 ```
 
@@ -267,40 +269,6 @@ pub trait Tool: Send + Sync {
 | `read` | `tools/files.rs` | Read file contents |
 | `write` | `tools/files.rs` | Write file contents |
 
-### Search Tool
-
-```rust
-use agi_agent::tools::search::{SearchTool, SearchConfig};
-
-let search = SearchTool::new(SearchConfig {
-    instance: "https://search.butler.ooo".to_string(),
-    timeout: 30,
-    num_results: 10,
-});
-
-// Execute
-let args = serde_json::json!({
-    "query": "rust programming",
-    "num_results": 5
-});
-let result = search.execute(&args)?;
-```
-
-### Bash Tool
-
-```rust
-use agi_agent::tools::bash::BashTool;
-
-let bash = BashTool::new()
-    .with_working_dir("/home/user")
-    .with_timeout(60);
-
-let args = serde_json::json!({
-    "command": "ls -la"
-});
-let result = bash.execute(&args)?;
-```
-
 ### Tool Registry
 
 Central management for all tools:
@@ -310,14 +278,11 @@ use agi_agent::tools::registry::ToolRegistry;
 
 let registry = ToolRegistry::default_registry();
 
-// Register custom tool
-registry.register(MyCustomTool::new());
-
 // Get function schemas for OpenAI
 let schemas = registry.get_function_schemas();
 
 // Execute a tool
-let result = registry.execute("bash", &args)?;
+let result = registry.execute("search", &args)?;
 ```
 
 ---
@@ -346,7 +311,6 @@ use agi_agent::services::session_review::{SessionReviewService, SessionReviewCon
 let service = SessionReviewService::new(
     session_manager,
     memory_store,
-    embedding_client,
     SessionReviewConfig {
         enabled: true,
         min_session_length: 2,
@@ -354,29 +318,6 @@ let service = SessionReviewService::new(
         quality_threshold: 0.5,
     },
 );
-
-// Process completed sessions
-let result = service.process_completed_sessions().await?;
-```
-
-### Search Learning Service
-
-Expands knowledge by researching topics:
-
-```rust
-use agi_agent::services::search_learning::{SearchLearningService, SearchLearningConfig};
-
-let service = SearchLearningService::new(
-    memory_store,
-    embedding_client,
-    SearchLearningConfig::default(),
-);
-
-// Queue topics for research
-service.queue_topic("How does quantum entanglement work?".to_string());
-
-// Process learning queue
-let result = service.process_queue().await?;
 ```
 
 ### Memory Eviction Service
@@ -392,15 +333,11 @@ let service = MemoryEvictionService::new(
     MemoryEvictionConfig {
         enabled: true,
         namespaces: vec!["retrieval".to_string()],
-        create_training_examples: true,
     },
 );
 
 // Process eviction
-let result = service.process_eviction().await?;
-
-// Get statistics
-let stats = service.get_stats().await?;
+service.process_eviction().await?;
 ```
 
 ---
@@ -423,11 +360,6 @@ pub fn format_reward(completion: &str) -> f32 {
     }
     score
 }
-
-pub fn correctness_reward(completion: &str, expected: &str) -> f32 {
-    // Extract answer and compare
-    // Return 2.0 for correct, 0.0 for incorrect
-}
 ```
 
 ### Training Configuration
@@ -436,25 +368,12 @@ pub fn correctness_reward(completion: &str, expected: &str) -> f32 {
 [training]
 enabled = true
 schedule = "0 2 * * *"  # 2 AM daily
-model = "qwen3:8b"
+model = "qwen3.5-4b"
 output_path = ".agent/models"
 batch_size = 4
 steps = 500
 learning_rate = 5e-6
 lora_rank = 16
-```
-
-### Running Training
-
-```bash
-# Via API
-curl -X POST http://localhost:8080/training/trigger
-
-# Via CLI
-./target/release/training --steps 500 --lr 5e-6
-
-# Check status
-curl http://localhost:8080/training/status
 ```
 
 ---
@@ -471,21 +390,7 @@ POST /v1/chat/completions
   "messages": [
     {"role": "system", "content": "You are helpful"},
     {"role": "user", "content": "Hello"}
-  ],
-  "stream": false
-}
-```
-
-Response:
-```json
-{
-  "id": "chatcmpl-xxx",
-  "choices": [{
-    "message": {
-      "role": "assistant",
-      "content": "Hello! How can I help?"
-    }
-  }]
+  ]
 }
 ```
 
@@ -494,7 +399,7 @@ Response:
 ```bash
 # Query memories
 POST /memories/query
-{"query": "rust", "namespace": "retrieval", "limit": 10}
+{"query": "rust", "limit": 10}
 
 # Store memory
 POST /memories
@@ -532,51 +437,31 @@ GET /training/models
 [server]
 host = "0.0.0.0"
 port = 8080
-workers = 4
 
 [model]
-base_url = "http://localhost:11434"
-name = "qwen3:8b"
+base_url = "http://10.10.199.146:8081"
+name = "qwen3.5-4b"
 embedding_model = "nomic-embed-text"
 embedding_dim = 768
 max_tokens = 4096
 temperature = 0.7
 
 [memory]
-storage_path = ".agent/memory"
+storage_path = "/home/administrator/.agi/memory"
 retrieval_ttl_hours = 24
 default_namespace = "retrieval"
 min_similarity = 0.6
 query_limit = 10
 
-[search]
-instance = "https://search.butler.ooo"
-timeout = 30
-results = 10
-
 [training]
 enabled = true
 schedule = "0 2 * * *"
-model = "qwen3:8b"
+model = "qwen3.5-4b"
 output_path = ".agent/models"
+epochs = 3
 batch_size = 4
-steps = 500
-learning_rate = 5e-6
+learning_rate = 1e-4
 lora_rank = 16
-
-[tools]
-search_enabled = true
-bash_enabled = true
-file_tools_enabled = true
-```
-
-### Environment Variables
-
-```bash
-# Override via environment
-export AGENT_MODEL_BASE_URL="http://custom-llm:11434"
-export AGENT_MEMORY_PATH="/data/memory"
-export TRAINING_STEPS=1000
 ```
 
 ---
@@ -617,7 +502,7 @@ impl Tool for CalculatorTool {
             .as_str()
             .ok_or_else(|| ToolError::InvalidArguments("Missing expression".to_string()))?;
         
-        // Evaluate (simplified)
+        // Evaluate expression
         let result = evaluate_expression(expr);
         
         Ok(ToolResult {
@@ -626,65 +511,12 @@ impl Tool for CalculatorTool {
             content: format!("Result: {}", result),
             success: true,
             error: None,
-            metadata: None,
         })
     }
 }
 
 // Register
 registry.register(CalculatorTool);
-```
-
-### Creating a Custom Background Service
-
-```rust
-use agi_agent::services::BackgroundService;
-
-pub struct MyCustomService {
-    config: MyConfig,
-}
-
-#[async_trait::async_trait]
-impl BackgroundService for MyCustomService {
-    fn name(&self) -> &'static str {
-        "my_custom_service"
-    }
-    
-    async fn run(&self) -> anyhow::Result<()> {
-        // Custom logic here
-        Ok(())
-    }
-    
-    fn is_enabled(&self) -> bool {
-        self.config.enabled
-    }
-}
-```
-
-### Creating a Custom Memory Backend
-
-```rust
-use agi_agent::memory::store::MemoryStore;
-use agi_agent::models::{Memory, SearchResult};
-
-pub struct RedisMemoryStore {
-    client: redis::Client,
-}
-
-impl MemoryStore for RedisMemoryStore {
-    fn store(&self, memory: &Memory) -> anyhow::Result<()> {
-        // Custom storage logic
-        Ok(())
-    }
-    
-    fn query(&self, embedding: &[f32], namespace: &str, limit: usize, min_score: f32) 
-        -> anyhow::Result<Vec<SearchResult>> {
-        // Custom query logic
-        Ok(vec![])
-    }
-    
-    // ... implement remaining methods
-}
 ```
 
 ### Custom Agent Configuration
@@ -698,10 +530,10 @@ let custom_config = AgentConfig {
     You have access to code execution tools.
     Always explain your reasoning.
     "#.to_string(),
-    max_context_length: 32768,  // Larger context
+    max_context_length: 32768,
     enable_reasoning: true,
-    reasoning_depth: 5,  // Deeper reasoning
-    max_tool_calls: 20,  // More tools allowed
+    reasoning_depth: 5,
+    max_tool_calls: 20,
     ..Default::default()
 };
 
@@ -720,6 +552,13 @@ let agent = Agent::new(config, custom_config)?
 - **Concurrency**: Fearless async/await
 - **Ecosystem**: Strong ML and web frameworks
 
+### Why llama.cpp?
+
+- **GGUF Support**: Efficient quantized model serving
+- **CUDA Acceleration**: GPU acceleration for inference
+- **OpenAI Compatibility**: Drop-in API compatibility
+- **Local Deployment**: No cloud dependency
+
 ### Why Two Memory Namespaces?
 
 - **Retrieval**: Fast access for conversation context
@@ -735,12 +574,6 @@ Separation allows:
 - Simpler implementation
 - Works well with format rewards
 - Good for agentic tasks
-
-### Why LoRA?
-
-- Parameter-efficient fine-tuning
-- Fast training
-- Easy model swapping
 
 ---
 
@@ -766,56 +599,16 @@ Separation allows:
 
 ---
 
-## Security Considerations
-
-### Bash Tool
-
-- Command allowlist/denylist
-- Working directory restrictions
-- Execution timeout
-- Output size limits
-
-### File Tools
-
-- Path restrictions (no /etc, /sys, /proc)
-- Directory traversal prevention
-- Permission checks
-
-### Memory Access
-
-- Namespace isolation
-- Future: encryption at rest
-
----
-
-## Future Enhancements
-
-### Phase 2
-
-- Multi-modal support (images, audio)
-- Persistent user sessions
-- Team of agents with shared memory
-- External knowledge base integration
-
-### Phase 3
-
-- Continuous learning (online RL)
-- Curiosity-driven exploration
-- Self-improvement through code generation
-- Theory of mind modeling
-
----
-
 ## Troubleshooting
 
 ### Agent Not Responding
 
 ```bash
-# Check health
+# Check if agent is running
 curl http://localhost:8080/health
 
 # Check logs
-journalctl -u agi-agent -f
+journalctl -u agent -f
 ```
 
 ### Memory Not Being Retrieved
@@ -836,6 +629,7 @@ curl -X POST http://localhost:8080/memories/query \
 curl http://localhost:8080/training/status
 
 # Cancel and restart
-pkill -f training
-./target/release/training
+pkill -f agent
+./build.sh --bin agent
+/tmp/target/release/agent
 ```

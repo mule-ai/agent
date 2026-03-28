@@ -1,140 +1,98 @@
 # AGI Agent
 
-A Rust-native AGI agent with extensive memory management and reinforcement learning capabilities.
-
-## Overview
-
-This project implements an intelligent agent that learns from interactions through:
-
-- **Extensive Memory System**: Short-term retrieval memory + long-term training memory
-- **Background Learning**: Automatic session review and topic research
-- **RL Training Pipeline**: Overnight training using accumulated experiences
-- **OpenAI-Compatible API**: Drop-in replacement for existing applications
-
-## Quick Start
-
-```bash
-# Clone and build
-cargo build --release
-
-# Configure
-cp agent.toml.example agent.toml
-# Edit agent.toml with your settings
-
-# Run
-cargo run --release
-```
-
-```bash
-# Chat with the agent
-curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "agent",
-    "messages": [{"role": "user", "content": "Hello!"}]
-  }'
-```
+A Rust-based AGI agent with memory management, session tracking, and RL training capabilities.
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                     User Interface Layer                          │
-│              OpenAI-Compatible Chat API (Axum)                    │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                         Python CLI                                     │
+│                     (./agi chat)                                      │
+└─────────────────────────────────────────────────────────────────────┘
                                 │
                                 ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                         Agent Core                               │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐  │
-│  │   Session    │  │  Reasoning  │  │   Tool Execution     │  │
-│  │  Manager     │  │   Engine    │  │  (Search, Bash...)   │  │
-│  └──────────────┘  └──────────────┘  └──────────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                      Agent API (port 8080)                           │
+│                   Rust HTTP Server (Axum)                            │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────┐   │
+│  │  Session    │  │  Memory     │  │   LLM Client              │   │
+│  │  Manager    │  │  Store     │  │   → llama.cpp            │   │
+│  └─────────────┘  └─────────────┘  └─────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────┘
                                 │
                                 ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    Memory System (SQLite + Tantivy)                │
-│  ┌────────────────────┐          ┌────────────────────────────┐ │
-│  │  Retrieval Memory  │    TTL   │    Training Memory         │ │
-│  │  (Short-term)     │ ───────► │    (Long-term)            │ │
-│  └────────────────────┘  evict  └────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────┘
-                                │
-                                ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    Background Services                             │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌────────────────┐   │
-│  │ Session Review  │  │ Search Learning │  │ Eviction      │   │
-│  │ (Training Data) │  │ (Topic Research)│  │ (RL Policies) │   │
-│  └─────────────────┘  └─────────────────┘  └────────────────┘   │
-└─────────────────────────────────────────────────────────────────┘
-                                │
-                                ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                   RL Training Pipeline                             │
-│         GRPO / LoRA Fine-tuning (Candle ML Framework)           │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                   llama.cpp Server (port 8081)                        │
+│                    Qwen3.5-4B-Q8_0 Model                             │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
-## Features
+## Quick Start
 
-### Memory System
-
-| Feature | Description |
-|---------|-------------|
-| **Semantic Search** | Tantivy vector search with embeddings |
-| **Namespace Support** | Separate retrieval and training namespaces |
-| **Automatic Eviction** | TTL-based expiration with smart policies |
-| **Quality Scoring** | Memory quality assessment for training |
-| **Embedding Cache** | LRU cache for fast retrieval |
-
-### Background Services
-
-| Service | Trigger | Action |
-|---------|---------|--------|
-| **Session Review** | On session end | Generate training examples |
-| **Search Learning** | Knowledge gaps detected | Research topics via SearXNG |
-| **Memory Eviction** | TTL expiration | Move to training or delete |
-| **RL Training** | Cron schedule (2 AM) | Fine-tune model with GRPO |
-
-### Tool System
-
-- **Search**: Web search via SearXNG
-- **Fetch**: Webpage content extraction
-- **Bash**: Secure command execution
-- **File Tools**: Read/write with path restrictions
-
-### Training Pipeline
-
-- **Algorithm**: Group Relative Policy Optimization (GRPO)
-- **Efficiency**: LoRA fine-tuning (rank 16)
-- **Rewards**: Format and correctness scoring
-- **Model Registry**: Version tracking with hot-swap
-
-## Installation
-
-### Prerequisites
-
-- Rust 1.75+ (with Cargo)
-- SQLite
-- Ollama (for local LLM) or OpenAI-compatible API
-- SearXNG instance (for web search)
-
-### Build
+### 1. Start llama.cpp Server
 
 ```bash
-# Build main agent
-cargo build --release
-
-# Build training binary
-cargo build --release --bin training
-
-# Build memory CLI
-cargo build --release --bin mem-cli
+sudo systemctl start llama-qwen
+sudo systemctl status llama-qwen
 ```
 
-### Configuration
+### 2. Build and Start Agent
+
+```bash
+./build.sh --bin agent
+/tmp/target/release/agent
+```
+
+### 3. Chat with the Agent
+
+```bash
+./agi chat
+```
+
+## Services
+
+### llama-qwen (Systemd)
+
+LLM inference server serving Qwen3.5-4B-Q8_0 via llama.cpp.
+
+```bash
+sudo systemctl start llama-qwen    # Start
+sudo systemctl stop llama-qwen       # Stop
+sudo systemctl status llama-qwen    # Check status
+```
+
+**Configuration:** `/home/administrator/qwen35-4b.sh`
+
+### Agent API (Manual)
+
+The Rust Agent handles session management, memory storage, and calls llama.cpp for LLM inference.
+
+```bash
+./build.sh --bin agent
+/tmp/target/release/agent
+```
+
+**Configuration:** `agent.toml`
+
+## CLI Commands
+
+```bash
+./agi chat              # Interactive chat
+./agi status            # Check memory/training status
+./agi train             # Trigger RL training
+./agi models            # List available models
+```
+
+## Python CLI
+
+The Python CLI (`./agi` or `python3 cli.py`) is a simple client that calls the Agent API.
+
+**Features:**
+- Auto-detects Agent availability
+- Falls back to direct llama.cpp if Agent not running
+- Clean terminal UI with streaming responses
+
+## Configuration
 
 Edit `agent.toml`:
 
@@ -144,196 +102,148 @@ host = "0.0.0.0"
 port = 8080
 
 [model]
-base_url = "http://localhost:11434"
-name = "qwen3:8b"
-embedding_model = "nomic-embed-text"
+base_url = "http://10.10.199.146:8081"  # llama.cpp endpoint
+name = "qwen3.5-4b"
 
 [memory]
-storage_path = ".agent/memory"
-retrieval_ttl_hours = 24
+storage_path = "/home/administrator/.agi/memory"
 
 [training]
 enabled = true
-schedule = "0 2 * * *"  # 2 AM daily
-steps = 500
+model = "qwen3.5-4b"
 ```
 
-## Usage
+## API Endpoints
 
-### Start the Agent
-
-```bash
-cargo run --release
-```
-
-### API Examples
+### Chat Completions
 
 ```bash
-# Chat completion
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "agent",
     "messages": [
-      {"role": "user", "content": "Explain quantum computing"}
-    ],
-    "stream": false
+      {"role": "system", "content": "You are helpful."},
+      {"role": "user", "content": "Hello!"}
+    ]
   }'
+```
 
-# List models
-curl http://localhost:8080/v1/models
+### Memory
+
+```bash
+# List memories
+curl http://localhost:8080/memories
 
 # Query memories
 curl -X POST http://localhost:8080/memories/query \
   -H "Content-Type: application/json" \
-  -d '{"query": "What did I learn about Rust?"}'
+  -d '{"query": "What did I learn?"}'
 
-# Store a memory
+# Store memory
 curl -X POST http://localhost:8080/memories \
   -H "Content-Type: application/json" \
-  -d '{
-    "content": "Rust uses ownership for memory safety",
-    "tags": ["rust", "programming"],
-    "memory_type": "concept"
-  }'
+  -d '{"content": "Important fact", "tags": ["fact"]}'
+```
 
+### Training
+
+```bash
 # Trigger training
 curl -X POST http://localhost:8080/training/trigger
 
-# Check training status
+# Check status
 curl http://localhost:8080/training/status
+
+# List models
+curl http://localhost:8080/training/models
 ```
 
-### Memory CLI
+## Memory System
 
-```bash
-# Store a memory
-./target/release/mem-cli store \
-  --content "Important fact" \
-  --tags "fact"
+### Namespaces
 
-# Query memories
-./target/release/mem-cli query --query "user preferences"
+- **retrieval**: Short-term memory for current context
+- **training**: Long-term memory for RL training data
 
-# List memories
-./target/release/mem-cli list --limit 100
+### Memory Types
 
-# Show statistics
-./target/release/mem-cli stats
-```
+| Type | Description |
+|------|-------------|
+| `Fact` | Specific facts learned |
+| `Concept` | Generalizations and patterns |
+| `Conversation` | Conversation transcripts |
+| `ToolResult` | Results from tool execution |
 
-## How It Works
+### Eviction Policy
 
-### Conversation Flow
-
-1. **Request Received**: User sends message via `/v1/chat/completions`
-2. **Session Management**: Get or create conversation session
-3. **Memory Retrieval**: Find relevant memories for context
-4. **Response Generation**: LLM generates response (with optional tool use)
-5. **Response Streamed**: Real-time response to user
-6. **Session Updated**: Messages and memories recorded
-
-### Memory Lifecycle
-
-```
-┌─────────────┐
-│  Created    │  New memory from conversation
-└──────┬──────┘
-       │
-       ▼ (TTL: 24 hours)
-┌─────────────┐
-│  Eviction   │  Evaluate for training or deletion
-│  Decision   │
-└──────┬──────┘
-       │
-       ├──────► Concept/Learned → Move to "training" namespace
-       │
-       ├──────► Frequently accessed → Keep in "retrieval"
-       │
-       └──────► Fact/Low quality → Delete
-```
-
-### Training Pipeline
-
-1. **Collect**: Gather training examples from sessions
-2. **Format**: Prepare prompts/completions with rewards
-3. **Train**: Run GRPO with LoRA adapters
-4. **Evaluate**: Check quality on holdout set
-5. **Deploy**: Hot-swap to new model version
+- TTL-based expiration (24 hours default)
+- Concepts move to training namespace
+- Facts are evaluated for quality
+- Low-quality memories are deleted
 
 ## Project Structure
 
 ```
 agent/
 ├── src/
-│   ├── main.rs                    # Entry point
-│   ├── agent/                     # Agent core
-│   │   ├── mod.rs                # Agent struct
-│   │   ├── session.rs            # Session management
-│   │   ├── reasoning.rs          # Reasoning engine
-│   │   └── llm.rs               # LLM client
-│   ├── api/                      # HTTP handlers
-│   │   ├── mod.rs               # Router setup
-│   │   ├── chat.rs              # Chat completions
-│   │   ├── memory.rs            # Memory endpoints
-│   │   └── training.rs           # Training endpoints
-│   ├── memory/                   # Memory system
-│   │   ├── mod.rs               # Config types
-│   │   ├── store.rs             # SQLite + Tantivy
-│   │   ├── embedding.rs          # Embedding client
-│   │   ├── retrieval.rs          # Memory retriever
-│   │   └── eviction.rs           # Eviction policies
-│   ├── tools/                    # Tool system
-│   │   ├── mod.rs               # Tool trait
-│   │   ├── search.rs             # Search tool
-│   │   ├── bash.rs               # Bash tool
-│   │   ├── files.rs              # File tools
-│   │   └── registry.rs           # Tool registry
-│   ├── services/                 # Background services
-│   │   ├── mod.rs               # Service trait
-│   │   ├── session_review.rs     # Training data generation
-│   │   ├── search_learning.rs    # Topic research
-│   │   └── memory_eviction.rs    # Memory management
-│   ├── config/                   # Configuration
-│   ├── models/                   # Data models
-│   └── training/                  # Training pipeline
-├── training/
-│   └── main.rs                   # Training binary
-├── mem_cli/
-│   └── main.rs                   # Memory CLI
-├── agent.toml                     # Configuration
-├── Cargo.toml
-└── README.md
+│   ├── main.rs              # Entry point
+│   ├── agent/               # Agent core
+│   │   ├── mod.rs           # Agent struct
+│   │   ├── session.rs       # Session management
+│   │   ├── reasoning.rs     # Reasoning engine
+│   │   └── llm.rs          # LLM client (→ llama.cpp)
+│   ├── api/                 # HTTP handlers
+│   │   ├── chat.rs         # Chat completions
+│   │   ├── memory.rs       # Memory endpoints
+│   │   └── training.rs      # Training endpoints
+│   ├── memory/              # Memory system
+│   │   ├── store.rs        # SQLite + Tantivy
+│   │   ├── embedding.rs     # Embedding client
+│   │   └── eviction.rs     # Eviction policies
+│   ├── models/              # Data models
+│   └── config/              # Configuration
+├── cli.py                    # Python CLI
+├── agi                       # CLI wrapper script
+├── agent.toml               # Configuration
+├── build.sh                 # Build script
+└── CLI.md                   # CLI documentation
 ```
+
+## Build
+
+The project uses SMB-mounted storage which doesn't support Rust build scripts. Use the provided build script:
+
+```bash
+./build.sh --bin agent        # Build agent
+./build.sh --bin cli         # Build CLI
+```
+
+Output goes to `/tmp/target/release/`
 
 ## Development
 
-### Run Tests
-
 ```bash
+# Run tests
 cargo test
-cargo test --package memory
-cargo test --package agent
-```
 
-### Code Quality
-
-```bash
+# Format code
 cargo fmt
+
+# Lint
 cargo clippy
 ```
 
-### Dependencies
+## Dependencies
 
-| Crate | Purpose |
-|-------|---------|
-| `axum` | HTTP server + WebSocket |
-| `tantivy` | Vector search |
-| `rusqlite` | SQLite database |
-| `candle` | ML framework |
-| `tokio` | Async runtime |
-| `reqwest` | HTTP client |
+| Component | Technology |
+|----------|------------|
+| HTTP Server | Axum |
+| Memory | SQLite + Tantivy |
+| LLM Client | llama.cpp (via HTTP) |
+| Async Runtime | Tokio |
+| Serialization | Serde |
 
 ## License
 
-MIT License
+MIT
