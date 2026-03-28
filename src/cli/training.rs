@@ -1,240 +1,231 @@
 //! Training functionality
 //! 
-//! Provides RL training trigger and status monitoring.
+//! Provides RL training trigger and status monitoring via the agent REST API.
 
 use anyhow::Result;
-use std::fs;
-use std::path::PathBuf;
+use reqwest::Client;
+use serde::Deserialize;
 use std::time::Duration;
-use tokio::time::sleep;
 
-const OLLAMA_URL: &str = "http://localhost:11434";
+const AGENT_URL: &str = "http://localhost:8080";
 
-/// Run RL training
+#[derive(Deserialize)]
+struct BatchStats {
+    example_count: usize,
+    is_ready: bool,
+}
+
+#[derive(Deserialize)]
+struct BatchStatus {
+    status: String,
+    examples_collected: usize,
+    models_trained: usize,
+    last_training: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct MemoryStats {
+    total: usize,
+    #[serde(rename = "by_namespace")]
+    by_namespace: Vec<NamespaceCount>,
+}
+
+#[derive(Deserialize)]
+struct NamespaceCount {
+    namespace: String,
+    count: usize,
+}
+
+#[derive(Deserialize)]
+struct TrainingStatus {
+    status: String,
+    current_job: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+struct MemoryEntry {
+    content: String,
+    namespace: String,
+    memory_type: String,
+}
+
+/// Run training via the agent REST API
 pub async fn run_training(steps: usize, epochs: usize) -> Result<()> {
+    let client = Client::builder()
+        .timeout(Duration::from_secs(300))
+        .build()?;
+
     println!("╔══════════════════════════════════════════════════════════╗");
-    println!("║                    RL Training Trigger                   ║");
+    println!("║                    RL Training                         ║");
     println!("╠══════════════════════════════════════════════════════════╣");
-    println!("║  Steps: {}                                           ║", steps);
-    println!("║  Epochs: {}                                            ║", epochs);
+    
+    // Check batch training stats
+    let stats_url = format!("{}/training/batch/stats", AGENT_URL);
+    match client.get(&stats_url).send().await {
+        Ok(response) => {
+            if let Ok(stats) = response.json::<BatchStats>().await {
+                println!("║  Training examples: {:>3} / 50                         ║", stats.example_count);
+                println!("║  Ready for training: {:<5}                            ║", 
+                    if stats.is_ready { "Yes" } else { "No" });
+            }
+        }
+        Err(e) => {
+            println!("║  Warning: Could not fetch stats: {}             ║", e);
+        }
+    }
+    
     println!("╚══════════════════════════════════════════════════════════╝");
     println!();
     
-    // First, let's prepare training data from memories
-    println!("📋 Preparing training data...");
-    let training_data = prepare_training_data()?;
+    // Trigger training
+    println!("🚀 Triggering batch training...");
     
-    if training_data.is_empty() {
-        println!("⚠️  No training data found. Starting training with default settings...");
-    } else {
-        println!("✓ Found {} training examples", training_data.len());
-    }
+    let trigger_url = format!("{}/training/batch/run", AGENT_URL);
+    let body = serde_json::json!({ "force": true });
     
-    // Check if Ollama has fine-tune capability
-    println!("\n🔧 Checking Ollama fine-tuning support...");
-    
-    // Start training via Ollama's API
-    println!("\n🚀 Starting RL training...");
-    println!("   Base model: qwen3.5-4b");
-    println!("   Target steps: {}", steps);
-    println!("   Epochs: {}", epochs);
-    println!();
-    
-    // Call Ollama fine-tune API
-    match start_finetune(steps, epochs).await {
-        Ok(job_id) => {
-            println!("✅ Training job started!");
-            println!("   Job ID: {}", job_id);
-            println!();
-            println!("📊 Monitoring training progress...");
-            println!("   (Press Ctrl+C to stop monitoring, training will continue)");
-            println!();
-            
-            // Monitor training progress
-            monitor_training(&job_id).await?;
-        }
-        Err(e) => {
-            eprintln!("\n❌ Failed to start training: {}", e);
-            eprintln!();
-            println!("💡 Note: Ollama may not support fine-tuning directly.");
-            println!("   Consider using a dedicated training pipeline with:");
-            println!("   - llama.cpp for GGUF models");
-            println!("   - Axolotl for fine-tuning");
-            println!("   - unsloth for fast LoRA training");
-        }
-    }
-    
-    Ok(())
-}
-
-/// Prepare training data from memory store
-fn prepare_training_data() -> Result<Vec<TrainingExample>> {
-    let mut examples = Vec::new();
-    
-    // Try to load from training_data directory
-    let training_dir = PathBuf::from(".agent/training_data");
-    if training_dir.exists() {
-        if let Ok(entries) = fs::read_dir(&training_dir) {
-            for entry in entries.flatten() {
-                if entry.path().extension().map(|e| e == "json").unwrap_or(false) {
-                    if let Ok(content) = fs::read_to_string(entry.path()) {
-                        if let Ok(example) = serde_json::from_str::<TrainingExample>(&content) {
-                            examples.push(example);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    Ok(examples)
-}
-
-/// Start fine-tuning job via Ollama
-async fn start_finetune(steps: usize, epochs: usize) -> Result<String> {
-    let url = format!("{}/api/finetune", OLLAMA_URL);
-    
-    let request_body = serde_json::json!({
-        "model": "qwen3.5-4b",
-        "adapter": "lora",
-        "steps": steps,
-        "epochs": epochs,
-        "train_files": [],
-        "output": {
-            "name": format!("qwen3.5-4b-trained-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S"))
-        },
-        "loraConfig": {
-            "rank": 16,
-            "alpha": 16,
-            "dropout": 0.05,
-            "targetModules": ["q_proj", "k_proj", "v_proj", "o_proj"]
-        }
-    });
-    
-    let client = reqwest::Client::new();
-    let response = client
-        .post(&url)
-        .json(&request_body)
-        .timeout(Duration::from_secs(30))
+    match client.post(&trigger_url)
+        .json(&body)
+        .timeout(Duration::from_secs(60))
         .send()
-        .await?;
-    
-    let status = response.status();
-    if !status.is_success() {
-        let error_text = response.text().await.unwrap_or_default();
-        anyhow::bail!("Ollama fine-tune API error: {} - {}", status, error_text);
-    }
-    
-    let response_json: serde_json::Value = response.json().await?;
-    
-    let job_id = response_json["job_id"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("Invalid response format"))?;
-    
-    Ok(job_id.to_string())
-}
-
-/// Monitor training progress
-async fn monitor_training(job_id: &str) -> Result<()> {
-    let url = format!("{}/api/finetune/{}", OLLAMA_URL, job_id);
-    let client = reqwest::Client::new();
-    
-    loop {
-        match client.get(&url).send().await {
-            Ok(response) => {
-                if response.status().is_success() {
-                    if let Ok(status) = response.json::<serde_json::Value>().await {
-                        let state = status["state"].as_str().unwrap_or("unknown");
-                        let progress = status["progress"].as_f64().unwrap_or(0.0);
-                        let loss = status["loss"].as_f64();
-                        
-                        print!("\r📈 Status: {:12} | Progress: {:5.1}%", state, progress);
-                        if let Some(l) = loss {
-                            print!(" | Loss: {:.4}", l);
-                        }
-                        std::io::Write::flush(&mut std::io::stdout())?;
-                        
-                        if state == "completed" || state == "failed" || state == "cancelled" {
-                            println!();
-                            break;
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                eprintln!("\n⚠️  Failed to get status: {}", e);
-            }
-        }
-        
-        sleep(Duration::from_secs(5)).await;
-    }
-    
-    println!();
-    println!("✅ Training monitoring complete!");
-    
-    Ok(())
-}
-
-/// Show training status
-pub async fn show_status() -> Result<()> {
-    println!("╔══════════════════════════════════════════════════════════╗");
-    println!("║                   Training Status                        ║");
-    println!("╠══════════════════════════════════════════════════════════╣");
-    
-    // Check Ollama for any running fine-tune jobs
-    let url = format!("{}/api/finetune", OLLAMA_URL);
-    let client = reqwest::Client::new();
-    
-    match client.get(&url).send().await {
+        .await
+    {
         Ok(response) => {
             if response.status().is_success() {
-                if let Ok(status) = response.json::<serde_json::Value>().await {
-                    if let Some(jobs) = status["jobs"].as_array() {
-                        if jobs.is_empty() {
-                            println!("║  No active training jobs                            ║");
-                        } else {
-                            for job in jobs {
-                                let state = job["state"].as_str().unwrap_or("unknown");
-                                let model = job["model"].as_str().unwrap_or("unknown");
-                                println!("║  Model: {}                                      ║", model);
-                                println!("║  State: {}                                       ║", state);
-                            }
+                if let Ok(result) = response.json::<serde_json::Value>().await {
+                    if result["success"] == true {
+                        println!("✅ Training started successfully!");
+                        if let Some(job_id) = result["job_id"].as_str() {
+                            println!("   Job ID: {}", job_id);
                         }
                     } else {
-                        println!("║  No active training jobs                            ║");
+                        println!("⚠️  Training not started: {}", result["message"]);
+                    }
+                }
+            } else {
+                println!("❌ Training request failed: HTTP {}", response.status());
+                let error_text = response.text().await.unwrap_or_default();
+                if !error_text.is_empty() {
+                    println!("   Details: {}", error_text);
+                }
+            }
+        }
+        Err(e) => {
+            println!("❌ Failed to connect to agent: {}", e);
+            println!();
+            println!("💡 Make sure the agent is running: ./agent");
+        }
+    }
+    
+    println!();
+    println!("📊 Check status with: ./agi status");
+    
+    Ok(())
+}
+
+/// Show comprehensive training status
+pub async fn show_status() -> Result<()> {
+    let client = Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()?;
+    
+    println!("╔══════════════════════════════════════════════════════════╗");
+    println!("║                       Agent Status                      ║");
+    println!("╠══════════════════════════════════════════════════════════╣");
+    
+    // Check agent health
+    let health_url = format!("{}/health", AGENT_URL);
+    match client.get(&health_url).send().await {
+        Ok(response) => {
+            if response.status().is_success() {
+                if let Ok(health) = response.json::<serde_json::Value>().await {
+                    let version = health["version"].as_str().unwrap_or("unknown");
+                    let status = health["status"].as_str().unwrap_or("unknown");
+                    println!("  Service: AGI Agent v{} (Status: {})", version, status);
+                }
+            }
+        }
+        Err(e) => {
+            println!("  ⚠️  Agent not responding: {}", e);
+            println!();
+            println!("  Start the agent with: ./agent");
+            println!("╚══════════════════════════════════════════════════════════╝");
+            return Ok(());
+        }
+    }
+    
+    // Check memories
+    println!();
+    println!("  Memory:");
+    let memory_url = format!("{}/memories/stats", AGENT_URL);
+    if let Ok(response) = client.get(&memory_url).send().await {
+        if let Ok(stats) = response.json::<MemoryStats>().await {
+            let mut retrieval = 0;
+            let mut training = 0;
+            for ns in stats.by_namespace {
+                match ns.namespace.as_str() {
+                    "retrieval" => retrieval = ns.count,
+                    "training" => training = ns.count,
+                    _ => {}
+                }
+            }
+            println!("    Total memories: {}", stats.total);
+            println!("    Retrieval: {}", retrieval);
+            println!("    Training: {}", training);
+        }
+    }
+    
+    // Check batch training
+    println!();
+    println!("  Batch Training:");
+    let batch_url = format!("{}/training/batch/stats", AGENT_URL);
+    if let Ok(response) = client.get(&batch_url).send().await {
+        if let Ok(stats) = response.json::<BatchStats>().await {
+            println!("    Examples: {} (need 50 for training)", stats.example_count);
+            println!("    Ready: {}", if stats.is_ready { "Yes ✅" } else { "No ❌" });
+        }
+    }
+    
+    let batch_status_url = format!("{}/training/batch/status", AGENT_URL);
+    if let Ok(response) = client.get(&batch_status_url).send().await {
+        if let Ok(status) = response.json::<BatchStatus>().await {
+            println!();
+            println!("  Training Status: {}", status.status);
+            println!("    Models trained: {}", status.models_trained);
+            if let Some(last) = status.last_training {
+                println!("    Last training: {}", last);
+            }
+        }
+    }
+    
+    // Check scheduler
+    println!();
+    println!("  Scheduler:");
+    let scheduler_url = format!("{}/scheduler/stats", AGENT_URL);
+    if let Ok(response) = client.get(&scheduler_url).send().await {
+        if let Ok(stats) = response.json::<serde_json::Value>().await {
+            let batch_runs = stats["stats"]["batch_training_runs"].as_u64().unwrap_or(0);
+            println!("    Batch training runs: {}", batch_runs);
+        }
+    }
+    
+    // List some training memories
+    println!();
+    println!("  Recent Training Memories:");
+    let training_url = format!("{}/memories?namespace=training&limit=5", AGENT_URL);
+    if let Ok(response) = client.get(&training_url).send().await {
+        if let Ok(data) = response.json::<serde_json::Value>().await {
+            if let Some(memories) = data["memories"].as_array() {
+                if memories.is_empty() {
+                    println!("    (none)");
+                } else {
+                    for mem in memories {
+                        let content = mem["content"].as_str().unwrap_or("");
+                        let short = if content.len() > 50 { &content[..50] } else { content };
+                        println!("    • {}", short.replace('\n', " "));
                     }
                 }
             }
         }
-        Err(_) => {
-            println!("║  Could not connect to Ollama                         ║");
-        }
-    }
-    
-    // List trained models
-    println!("╠══════════════════════════════════════════════════════════╣");
-    println!("║                   Trained Models                         ║");
-    println!("╠══════════════════════════════════════════════════════════╣");
-    
-    let models_dir = PathBuf::from(".agent/models");
-    if models_dir.exists() {
-        if let Ok(entries) = fs::read_dir(&models_dir) {
-            let mut found = false;
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if name.contains("lora") || name.contains("adapter") || name.contains("trained") {
-                    println!("║  ✓ {}     ║", name);
-                    found = true;
-                }
-            }
-            if !found {
-                println!("║  No trained models found yet                        ║");
-            }
-        } else {
-            println!("║  No trained models found yet                        ║");
-        }
-    } else {
-        println!("║  No trained models found yet                        ║");
     }
     
     println!("╚══════════════════════════════════════════════════════════╝");
@@ -244,56 +235,41 @@ pub async fn show_status() -> Result<()> {
 
 /// List available models
 pub async fn list_models() -> Result<()> {
+    let client = Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()?;
+
     println!("╔══════════════════════════════════════════════════════════╗");
-    println!("║                   Available Models                       ║");
+    println!("║                   Available Models                      ║");
     println!("╠══════════════════════════════════════════════════════════╣");
     
-    // Query Ollama for available models
-    let url = format!("{}/api/tags", OLLAMA_URL);
-    let client = reqwest::Client::new();
-    
-    match client.get(&url).send().await {
+    // Query agent for models
+    let models_url = format!("{}/v1/models", AGENT_URL);
+    match client.get(&models_url).send().await {
         Ok(response) => {
             if response.status().is_success() {
-                if let Ok(json) = response.json::<serde_json::Value>().await {
-                    if let Some(models) = json["models"].as_array() {
+                if let Ok(data) = response.json::<serde_json::Value>().await {
+                    if let Some(models) = data["data"].as_array() {
                         for model in models {
-                            let name = model["name"].as_str().unwrap_or("unknown");
-                            let size = model["size"].as_u64().unwrap_or(0);
-                            let size_gb = size as f64 / 1_000_000_000.0;
-                            
-                            let is_base = name.contains("qwen3.5-4b") && !name.contains("-trained");
-                            let badge = if is_base { "[BASE]" } else { "[    ]" };
-                            
-                            println!("║  {} {:40}  ║", badge, name);
-                            if size_gb > 0.0 {
-                                println!("║       Size: {:.1} GB                                ║", size_gb);
-                            }
+                            let name = model["id"].as_str().unwrap_or("unknown");
+                            println!("║  {:<50}  ║", name);
                         }
                     }
                 }
             }
         }
         Err(e) => {
-            println!("║  Error connecting to Ollama: {}                     ║", e);
+            println!("║  Error: {}                                    ║", e);
         }
     }
     
-    println!();
-    println!("  [BASE] = Base model (qwen3.5-4b)");
-    println!("  To chat with base model:   agi-cli chat");
-    println!("  To chat with trained model: agi-cli chat --model <model-name>");
-    println!();
-    println!("  To trigger RL training:     agi-cli train");
-    println!();
+    println!("╠══════════════════════════════════════════════════════════╣");
+    println!("║                   Commands                           ║");
+    println!("╠══════════════════════════════════════════════════════════╣");
+    println!("║  ./agi chat              - Chat with base model       ║");
+    println!("║  ./agi train             - Trigger training            ║");
+    println!("║  ./agi status            - Check status                ║");
     println!("╚══════════════════════════════════════════════════════════╝");
     
     Ok(())
-}
-
-// Training example structure
-#[derive(serde::Serialize, serde::Deserialize)]
-struct TrainingExample {
-    prompt: String,
-    completion: String,
 }

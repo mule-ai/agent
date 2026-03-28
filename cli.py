@@ -4,31 +4,21 @@ AGI Agent CLI - Interactive Chat and RL Training
 
 Usage:
     python cli.py chat                    # Chat with base model (qwen3.5-4b)
-    python cli.py chat --model MODEL      # Chat with specific model
-    python cli.py train --steps 500       # Trigger RL training
-    python cli.py status                 # Check training status
+    python cli.py train                  # Trigger batch training
+    python cli.py status                 # Check status
     python cli.py models                 # List available models
-    python cli.py chat-adapter ADAPTER   # Chat with a LoRA adapter
+    python cli.py research <topic>       # Research a topic
 """
 
 import argparse
 import json
-import os
 import sys
 import time
 import requests
 from pathlib import Path
-from datetime import datetime
 
-# Agent API server (Rust Agent handles all logic)
+# Agent API server
 AGENT_URL = "http://localhost:8080"
-
-# llama.cpp (called by Rust Agent, not directly by CLI)
-LLAMA_URL = "http://10.10.199.146:8081"
-
-# Storage (handled by Rust Agent - these are just for display)
-CONVERSATIONS_DIR = Path(".agent/conversations")
-TRAINING_DATA_DIR = Path(".agent/training_data")
 
 # ANSI colors
 class Colors:
@@ -42,267 +32,226 @@ class Colors:
     BOLD = '\033[1m'
 
 
-def print_box(title: str, lines: list[str] = None):
-    """Print a nice box around text"""
-    width = 60
+def check_agent():
+    """Check if agent is running"""
+    try:
+        r = requests.get(f"{AGENT_URL}/health", timeout=2)
+        if r.status_code == 200:
+            return r.json()
+    except:
+        pass
+    return None
+
+
+def print_box(title, lines=None, width=60):
+    """Print a nice box"""
     print(f"\n{Colors.CYAN}╔{'═' * (width - 2)}╗{Colors.ENDC}")
     print(f"{Colors.CYAN}║{Colors.ENDC} {title.center(width - 4)} {Colors.CYAN}║{Colors.ENDC}")
     if lines:
+        print(f"{Colors.CYAN}╠{'─' * (width - 2)}╣{Colors.ENDC}")
         for line in lines:
-            print(f"{Colors.CYAN}╠{'─' * (width - 2)}╣{Colors.ENDC}")
-            for i in range(0, len(line), width - 4):
-                chunk = line[i:i + width - 4]
-                print(f"{Colors.CYAN}║{Colors.ENDC} {chunk.ljust(width - 4)} {Colors.CYAN}║{Colors.ENDC}")
+            print(f"{Colors.CYAN}║{Colors.ENDC} {line.ljust(width - 4)} {Colors.CYAN}║{Colors.ENDC}")
     print(f"{Colors.CYAN}╚{'═' * (width - 2)}╝{Colors.ENDC}\n")
 
 
-def chat(model: str = "agent"):
-    """Interactive chat - tries Agent API first, falls back to direct llama.cpp"""
+def chat(model="agent"):
+    """Interactive chat"""
+    health = check_agent()
+    if not health:
+        print(f"{Colors.RED}❌ Agent not running! Start with: ./agent{Colors.ENDC}\n")
+        return
     
-    # Check if Agent is available
-    agent_available = check_agent_available()
-    
-    if agent_available:
-        print_box("AGI Agent Chat", [
-            "Model: qwen3.5-4b (via Rust Agent)",
-            "Agent: Connected ✓",
-            "Type 'exit' or 'quit' to end the session",
-            "Type 'clear' to clear the conversation"
-        ])
-    else:
-        print_box("AGI Agent Chat", [
-            "Model: qwen3.5-4b (direct llama.cpp)",
-            "Agent: Not running (memory/sessions disabled)",
-            "Type 'exit' or 'quit' to end the session",
-            "Type 'clear' to clear the conversation"
-        ])
+    print_box("AGI Agent Chat", [
+        f"Model: {model}",
+        f"Agent: v{health.get('version', '?')} ✓",
+        "Type 'exit' to quit, 'clear' to clear history"
+    ])
     
     messages = [{
         "role": "system",
-        "content": """You are a helpful AI assistant. Be concise and informative.
-Format your responses clearly. Use code blocks for code examples."""
+        "content": "You are a helpful AI assistant. Be concise and informative."
     }]
     
     while True:
         try:
             user_input = input(f"{Colors.GREEN}👤 You:{Colors.ENDC} ").strip()
         except EOFError:
-            print("\n\nGoodbye!")
             break
         
         if not user_input:
             continue
         
-        cmd = user_input.lower()
-        if cmd in ['exit', 'quit', 'q']:
+        if user_input.lower() in ['exit', 'quit', 'q']:
             print(f"\n{Colors.CYAN}👋 Goodbye!{Colors.ENDC}\n")
             break
         
-        if cmd in ['clear', 'c']:
-            messages = [{
-                "role": "system",
-                "content": """You are a helpful AI assistant. Be concise and informative.
-Format your responses clearly. Use code blocks for code examples."""
-            }]
-            print(f"{Colors.YELLOW}✓ Conversation cleared{Colors.ENDC}")
+        if user_input.lower() in ['clear', 'c']:
+            messages = [{"role": "system", "content": "You are a helpful AI assistant."}]
+            print(f"{Colors.YELLOW}✓ Cleared{Colors.ENDC}")
             continue
         
         messages.append({"role": "user", "content": user_input})
-        
         print(f"{Colors.BLUE}🤖 Assistant:{Colors.ENDC} ", end="", flush=True)
         
         try:
-            payload = {
-                "model": model,
-                "messages": messages,
-                "stream": False,
-            }
-            
-            # Choose endpoint based on Agent availability
-            url = f"{AGENT_URL}/v1/chat/completions" if agent_available else f"{LLAMA_URL}/v1/chat/completions"
-            
-            # Use curl subprocess
-            import subprocess
-            curl_cmd = [
-                "curl", "-s", "-X", "POST",
-                url,
-                "-H", "Content-Type: application/json",
-                "-d", json.dumps(payload)
-            ]
-            
-            result = subprocess.run(curl_cmd, capture_output=True, text=True, timeout=120)
-            response_json = json.loads(result.stdout)
-            
-            content = response_json.get("choices", [{}])[0].get("message", {}).get("content", "")
+            r = requests.post(
+                f"{AGENT_URL}/v1/chat/completions",
+                json={"model": model, "messages": messages},
+                timeout=60
+            )
+            data = r.json()
+            content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
             print(content)
             messages.append({"role": "assistant", "content": content})
-            
         except Exception as e:
-            print(f"{Colors.RED}\n❌ Error: {e}{Colors.ENDC}")
+            print(f"{Colors.RED}❌ Error: {e}{Colors.ENDC}")
             if messages and messages[-1]["role"] == "user":
                 messages.pop()
 
 
-def check_agent_available():
-    """Check if the Rust Agent API is running"""
+def train():
+    """Trigger batch training"""
+    print_box("Batch Training")
+    
+    # Get batch stats
     try:
-        response = requests.get(f"{AGENT_URL}/health", timeout=2)
-        return response.status_code == 200
-    except:
-        return False
-
-
-def check_agent_available():
-    """Check if the Rust Agent API is running"""
-    try:
-        response = requests.get(f"{AGENT_URL}/health", timeout=2)
-        return response.status_code == 200
-    except:
-        return False
-
-
-def get_agent_stats():
-    """Get stats from Agent API"""
-    try:
-        response = requests.get(f"{AGENT_URL}/memories/stats", timeout=5)
-        if response.status_code == 200:
-            return response.json()
-    except:
-        pass
-    return None
-
-
-def train(steps: int = 500, epochs: int = 3):
-    """Trigger RL training via Agent API"""
-    print_box("RL Training Trigger", [
-        f"Steps: {steps}",
-        f"Epochs: {epochs}",
-        "Rust Agent handles all training logic"
-    ])
+        r = requests.get(f"{AGENT_URL}/training/batch/stats", timeout=5)
+        if r.status_code == 200:
+            stats = r.json()
+            print(f"  {Colors.BOLD}Training Examples:{Colors.ENDC}")
+            print(f"    Collected: {stats.get('example_count', 0)}")
+            print(f"    Ready: {'Yes ✓' if stats.get('is_ready') else 'No ✗'}")
+            print()
+    except Exception as e:
+        print(f"  {Colors.YELLOW}Could not fetch stats: {e}{Colors.ENDC}\n")
+    
+    print(f"  {Colors.CYAN}Triggering batch training...{Colors.ENDC}")
     
     try:
-        payload = {"steps": steps, "epochs": epochs}
-        response = requests.post(
-            f"{AGENT_URL}/training/trigger",
-            json=payload,
+        r = requests.post(
+            f"{AGENT_URL}/training/batch/run",
+            json={"force": True},
             timeout=30
         )
-        
-        if response.status_code == 200:
-            result = response.json()
-            print(f"{Colors.GREEN}✅ Training started!{Colors.ENDC}")
-            print(f"   Job ID: {result.get('job_id', 'unknown')}")
-            print(f"\n{Colors.CYAN}Check status: ./agi status{Colors.ENDC}")
-        elif response.status_code == 409:
-            print(f"{Colors.YELLOW}⚠️  Training already in progress{Colors.ENDC}")
-            print(f"   Check status: ./agi status")
+        if r.status_code == 200:
+            result = r.json()
+            if result.get("success"):
+                print(f"  {Colors.GREEN}✅ Training started!{Colors.ENDC}")
+            else:
+                print(f"  {Colors.YELLOW}⚠️ {result.get('message', 'Failed')}{Colors.ENDC}")
         else:
-            print(f"{Colors.RED}❌ Failed to start training{Colors.ENDC}")
-            
-    except requests.exceptions.RequestException as e:
-        print(f"{Colors.RED}❌ Could not connect to Agent: {e}{Colors.ENDC}")
-        print(f"   Make sure the Agent is running on {AGENT_URL}")
-
-
-def prepare_training_data() -> list:
-    """Prepare training data from saved conversations"""
-    examples = []
-    training_dir = TRAINING_DATA_DIR
+            print(f"  {Colors.RED}❌ HTTP {r.status_code}{Colors.ENDC}")
+    except Exception as e:
+        print(f"  {Colors.RED}❌ Error: {e}{Colors.ENDC}")
     
-    if training_dir.exists():
-        for entry in training_dir.glob("*.json"):
-            try:
-                with open(entry) as f:
-                    data = json.load(f)
-                    # Each file is one training example
-                    if "prompt" in data and "completion" in data:
-                        examples.append(data)
-            except (json.JSONDecodeError, IOError):
-                pass
-    
-    return examples
-
-
-def monitor_training(job_id: str):
-    """Monitor training progress"""
-    try:
-        while True:
-            try:
-                response = requests.get(f"{LLAMA_URL}/api/finetune/{job_id}", timeout=10)
-                
-                if response.status_code == 200:
-                    status = response.json()
-                    state = status.get("state", "unknown")
-                    progress = status.get("progress", 0)
-                    loss = status.get("loss")
-                    
-                    loss_str = f" | Loss: {loss:.4f}" if loss else ""
-                    print(f"\r{Colors.CYAN}📈{Colors.ENDC} Status: {state:12} | Progress: {progress:5.1f}%{loss_str}    ", end="", flush=True)
-                    
-                    if state in ["completed", "failed", "cancelled"]:
-                        print()  # newline
-                        break
-                else:
-                    print(f"\r{Colors.YELLOW}⚠️{Colors.ENDC} Status check failed, retrying...", end="", flush=True)
-                    
-            except requests.exceptions.RequestException:
-                print(f"\r{Colors.YELLOW}⚠️{Colors.ENDC} Connection lost, retrying...", end="", flush=True)
-            
-            time.sleep(5)
-        
-        print(f"\n{Colors.GREEN}✅ Training monitoring complete!{Colors.ENDC}\n")
-        
-    except KeyboardInterrupt:
-        print(f"\n\n{Colors.YELLOW}⚠️  Stopped monitoring (training may continue){Colors.ENDC}\n")
+    print()
+    print(f"  Check status: {Colors.CYAN}./agi status{Colors.ENDC}\n")
 
 
 def status():
-    """Show agent status via API"""
+    """Show comprehensive status"""
+    health = check_agent()
+    
     print_box("Agent Status")
     
-    # Get memory stats from Agent
-    stats = get_agent_stats()
-    if stats:
-        total = stats.get("total_memories", 0)
-        retrieval = stats.get("namespaces", {}).get("retrieval", 0)
-        training = stats.get("namespaces", {}).get("training", 0)
-        print(f"  {Colors.BOLD}Memory:{Colors.ENDC}")
-        print(f"    Total memories: {Colors.GREEN}{total}{Colors.ENDC}")
-        print(f"    Retrieval: {retrieval}")
-        print(f"    Training: {training}")
-    else:
-        print(f"  {Colors.YELLOW}⚠️  Could not connect to Agent{Colors.ENDC}")
-        print(f"    Make sure the Agent is running on {AGENT_URL}")
+    if not health:
+        print(f"  {Colors.RED}❌ Agent not running{Colors.ENDC}")
+        print(f"  Start with: {Colors.CYAN}./agent{Colors.ENDC}\n")
+        return
     
-    # Get training status from Agent
-    print(f"\n  {Colors.BOLD}Training:{Colors.ENDC}")
-    try:
-        response = requests.get(f"{AGENT_URL}/training/status", timeout=5)
-        if response.status_code == 200:
-            data = response.json()
-            print(f"    Status: {data.get('status', 'unknown')}")
-            print(f"    Total jobs: {data.get('total_jobs', 0)}")
-        else:
-            print(f"    No training data yet")
-    except:
-        print(f"    Could not get training status")
+    print(f"  {Colors.GREEN}✓{Colors.ENDC} Agent v{health.get('version', '?')} - {health.get('status', 'running')}")
     
-    # Get trained models
-    print(f"\n  {Colors.BOLD}Trained Models:{Colors.ENDC}")
+    # Memory stats
+    print(f"\n  {Colors.BOLD}Memory:{Colors.ENDC}")
     try:
-        response = requests.get(f"{AGENT_URL}/training/models", timeout=5)
-        if response.status_code == 200:
-            data = response.json()
-            models = data.get("models", [])
-            if models:
-                for m in models:
-                    print(f"    ✓ {m.get('name', 'unknown')}")
+        r = requests.get(f"{AGENT_URL}/memories/stats", timeout=5)
+        if r.status_code == 200:
+            stats = r.json()
+            print(f"    Total: {stats.get('total', 0)}")
+            for ns in stats.get('by_namespace', []):
+                ns_name = ns.get('namespace', 'unknown')
+                ns_count = ns.get('count', 0)
+                print(f"    {ns_name}: {ns_count}")
+            
+            print(f"\n    By type:")
+            for t in stats.get('by_type', []):
+                print(f"      {t.get('type', 'unknown')}: {t.get('count', 0)}")
+    except Exception as e:
+        print(f"    {Colors.YELLOW}Could not fetch: {e}{Colors.ENDC}")
+    
+    # Batch training
+    print(f"\n  {Colors.BOLD}Batch Training:{Colors.ENDC}")
+    try:
+        r = requests.get(f"{AGENT_URL}/training/batch/stats", timeout=5)
+        if r.status_code == 200:
+            stats = r.json()
+            print(f"    Examples: {stats.get('example_count', 0)} / 50")
+            ready = stats.get('is_ready', False)
+            status_icon = f"{Colors.GREEN}✓{Colors.ENDC}" if ready else f"{Colors.RED}✗{Colors.ENDC}"
+            print(f"    Ready: {status_icon}")
+    except Exception as e:
+        print(f"    {Colors.YELLOW}Could not fetch: {e}{Colors.ENDC}")
+    
+    # Training status
+    print(f"\n  {Colors.BOLD}Training Status:{Colors.ENDC}")
+    try:
+        r = requests.get(f"{AGENT_URL}/training/batch/status", timeout=5)
+        if r.status_code == 200:
+            stats = r.json()
+            print(f"    Status: {stats.get('status', 'unknown')}")
+            print(f"    Models trained: {stats.get('models_trained', 0)}")
+            if stats.get('last_training'):
+                print(f"    Last: {stats.get('last_training', 'never')}")
+    except Exception as e:
+        print(f"    {Colors.YELLOW}Could not fetch: {e}{Colors.ENDC}")
+    
+    # Recent training memories
+    print(f"\n  {Colors.BOLD}Recent Training Data:{Colors.ENDC}")
+    try:
+        r = requests.get(f"{AGENT_URL}/memories?namespace=training&limit=5", timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            memories = data.get('memories', [])
+            if memories:
+                for m in memories:
+                    content = m.get('content', '')[:60]
+                    mtype = m.get('memory_type', 'unknown')
+                    print(f"    • [{mtype}] {content}...")
             else:
-                print("    No trained models yet")
+                print(f"    {Colors.YELLOW}(none){Colors.ENDC}")
+    except Exception as e:
+        print(f"    {Colors.YELLOW}Could not fetch: {e}{Colors.ENDC}")
+    
+    print()
+
+
+def research(topic):
+    """Research a topic using search learning"""
+    print(f"{Colors.CYAN}🔍 Researching: {topic}{Colors.ENDC}\n")
+    
+    try:
+        r = requests.post(
+            f"{AGENT_URL}/services/search-learning",
+            json={"topic": topic},
+            timeout=60
+        )
+        if r.status_code == 200:
+            result = r.json()
+            print(f"  {Colors.GREEN}✅ Research complete!{Colors.ENDC}")
+            print(f"  Topics researched: {result.get('topics_researched', 0)}")
+            print(f"  Concepts learned: {result.get('concepts_learned', 0)}")
+            
+            # Check updated stats
+            r2 = requests.get(f"{AGENT_URL}/training/batch/stats", timeout=5)
+            if r2.status_code == 200:
+                stats = r2.json()
+                print(f"\n  Training examples now: {stats.get('example_count', 0)}")
+                if stats.get('is_ready'):
+                    print(f"  {Colors.GREEN}✓ Ready for training!{Colors.ENDC}")
         else:
-            print("    No trained models yet")
-    except:
-        print("    Could not get models")
+            print(f"  {Colors.RED}❌ Failed: HTTP {r.status_code}{Colors.ENDC}")
+    except Exception as e:
+        print(f"  {Colors.RED}❌ Error: {e}{Colors.ENDC}")
     
     print()
 
@@ -312,90 +261,49 @@ def models():
     print_box("Available Models")
     
     try:
-        response = requests.get(f"{LLAMA_URL}/api/tags", timeout=10)
-        response.raise_for_status()
-        
-        data = response.json()
-        model_list = data.get("models", [])
-        
-        if model_list:
-            print(f"{'Model':<40} {'Size':<12} {'Type'}")
-            print("-" * 60)
-            
-            for model in model_list:
-                name = model.get("name", "unknown")
-                size = model.get("size", 0)
-                size_gb = size / (1024**3)
-                
-                is_base = "qwen3.5-4b" in name and "trained" not in name
-                model_type = "[BASE]" if is_base else "[     ]"
-                
-                print(f"{name:<40} {size_gb:>6.1f} GB  {model_type}")
-        else:
-            print("No models found")
-            
-    except requests.exceptions.RequestException as e:
-        print(f"Error connecting to Ollama: {e}")
+        r = requests.get(f"{AGENT_URL}/v1/models", timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            for model in data.get('data', []):
+                name = model.get('id', 'unknown')
+                print(f"  {Colors.CYAN}•{Colors.ENDC} {name}")
+    except Exception as e:
+        print(f"  {Colors.YELLOW}Could not fetch: {e}{Colors.ENDC}")
     
     print()
-    print("  [BASE] = Base model (qwen3.5-4b)")
-    print()
-    print("  Commands:")
-    print("    Chat with base model:   python cli.py chat")
-    print("    Chat with specific:     python cli.py chat --model MODEL")
-    print("    Trigger RL training:    python cli.py train")
+    print(f"  Commands:")
+    print(f"    ./agi chat         - Chat with agent")
+    print(f"    ./agi train        - Trigger training")
+    print(f"    ./agi status       - Show status")
+    print(f"    ./agi research <t>  - Research a topic")
     print()
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="AGI Agent CLI - Interactive Chat and RL Training",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  python cli.py chat                    Chat with base model
-  python cli.py chat --model llama3     Chat with specific model
-  python cli.py train --steps 500       Trigger RL training
-  python cli.py status                  Check training status
-  python cli.py models                  List available models
-        """
-    )
+    parser = argparse.ArgumentParser(description="AGI Agent CLI")
+    sub = parser.add_subparsers(dest="cmd")
     
-    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+    sub.add_parser("chat", help="Start chat session")
+    sub.add_parser("train", help="Trigger training")
+    sub.add_parser("status", help="Show status")
+    sub.add_parser("models", help="List models")
     
-    # Chat command
-    chat_parser = subparsers.add_parser("chat", help="Start interactive chat session")
-    chat_parser.add_argument("--model", "-m", default="qwen3.5-4b", help="Model name to chat with")
-    
-    # Train command
-    train_parser = subparsers.add_parser("train", help="Trigger RL training")
-    train_parser.add_argument("--steps", "-s", type=int, default=500, help="Number of training steps")
-    train_parser.add_argument("--epochs", "-e", type=int, default=3, help="Number of epochs")
-    
-    # Status command
-    subparsers.add_parser("status", help="Check training status")
-    
-    # Models command
-    subparsers.add_parser("models", help="List available models")
-    
-    # Chat adapter command
-    adapter_parser = subparsers.add_parser("chat-adapter", help="Chat with a LoRA adapter")
-    adapter_parser.add_argument("adapter", help="Name of the LoRA adapter")
+    research_parser = sub.add_parser("research", help="Research a topic")
+    research_parser.add_argument("topic", help="Topic to research")
     
     args = parser.parse_args()
     
-    if args.command == "chat":
-        chat(model=args.model)
-    elif args.command == "train":
-        train(steps=args.steps, epochs=args.epochs)
-    elif args.command == "status":
+    if args.cmd == "chat":
+        chat()
+    elif args.cmd == "train":
+        train()
+    elif args.cmd == "status":
         status()
-    elif args.command == "models":
+    elif args.cmd == "models":
         models()
-    elif args.command == "chat-adapter":
-        chat(model="qwen3.5-4b", adapter=args.adapter)
+    elif args.cmd == "research":
+        research(args.topic)
     else:
-        # Default to chat if no command
         chat()
 
 
