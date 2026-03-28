@@ -2,21 +2,25 @@
 //! 
 //! Implements memory retrieval with semantic search as specified in SPEC.md
 
-use crate::models::{Memory, QueryResult};
+use crate::models::QueryResult;
 use crate::memory::embedding::EmbeddingClient;
-use anyhow::Result;
 use std::sync::Arc;
 
 /// Memory retriever for finding relevant memories
+#[allow(dead_code)]
 pub struct MemoryRetriever {
     embedding_client: Arc<EmbeddingClient>,
+    #[allow(dead_code)]
     default_namespace: String,
+    #[allow(dead_code)]
     min_similarity: f32,
+    #[allow(dead_code)]
     query_limit: usize,
 }
 
 impl MemoryRetriever {
     /// Create a new memory retriever
+    #[allow(dead_code)]
     pub fn new(
         embedding_client: Arc<EmbeddingClient>,
         default_namespace: String,
@@ -41,16 +45,19 @@ impl MemoryRetriever {
     }
 
     /// Get the default namespace
+    #[allow(dead_code)]
     pub fn default_namespace(&self) -> &str {
         &self.default_namespace
     }
 
     /// Get minimum similarity threshold
+    #[allow(dead_code)]
     pub fn min_similarity(&self) -> f32 {
         self.min_similarity
     }
 
     /// Get query limit
+    #[allow(dead_code)]
     pub fn query_limit(&self) -> usize {
         self.query_limit
     }

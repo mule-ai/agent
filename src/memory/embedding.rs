@@ -58,7 +58,15 @@ impl EmbeddingClient {
             cache: Arc::new(RwLock::new(LruCache::new(std::num::NonZeroUsize::new(1024).unwrap()))),
         }
     }
+}
 
+impl Default for EmbeddingClient {
+    fn default() -> Self {
+        Self::new(EmbeddingClientConfig::default())
+    }
+}
+
+impl EmbeddingClient {
     /// Generate embedding for a single text
     pub async fn embed(&self, text: &str) -> Result<Vec<f32>> {
         // Check cache first (use write lock since LRU get() may modify)
@@ -116,7 +124,8 @@ impl EmbeddingClient {
             .context("No embeddings in response")
     }
 
-    /// Generate embeddings for multiple texts
+    /// Generate embeddings for multiple texts (for future use)
+    #[allow(dead_code)]
     pub async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
         let mut results = Vec::with_capacity(texts.len());
         
@@ -128,19 +137,22 @@ impl EmbeddingClient {
         Ok(results)
     }
 
-    /// Clear the embedding cache
+    /// Clear the embedding cache (for future use)
+    #[allow(dead_code)]
     pub fn clear_cache(&self) {
         let mut cache = self.cache.write();
         cache.clear();
     }
 
-    /// Get cache size
+    /// Get cache size (for future use)
+    #[allow(dead_code)]
     pub fn cache_size(&self) -> usize {
         let cache = self.cache.read();
         cache.len()
     }
 
-    /// Compute cosine similarity between two vectors
+    /// Compute cosine similarity between two vectors (for future use)
+    #[allow(dead_code)]
     pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
         if a.len() != b.len() || a.is_empty() {
             return 0.0;
@@ -157,7 +169,8 @@ impl EmbeddingClient {
         dot_product / (magnitude_a * magnitude_b)
     }
 
-    /// Compute euclidean distance between two vectors
+    /// Compute euclidean distance between two vectors (for future use)
+    #[allow(dead_code)]
     pub fn euclidean_distance(a: &[f32], b: &[f32]) -> f32 {
         if a.len() != b.len() {
             return f32::MAX;
@@ -172,16 +185,19 @@ impl EmbeddingClient {
 }
 
 /// Mock embedding client for testing without Ollama
+#[allow(dead_code)]
 pub struct MockEmbeddingClient {
     dimension: usize,
 }
 
 impl MockEmbeddingClient {
+    #[allow(dead_code)]
     pub fn new(dimension: usize) -> Self {
         Self { dimension }
     }
 
     /// Generate a mock embedding (random or hash-based)
+    #[allow(dead_code)]
     pub fn embed(&self, text: &str) -> Vec<f32> {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};

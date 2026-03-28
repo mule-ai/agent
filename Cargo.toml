@@ -47,6 +47,7 @@ clap = { version = "4", features = ["derive"] }
 lazy_static = "1.4"
 lru = "0.12"
 regex = "1"
+itertools = "0.13"
 
 [dev-dependencies]
 tokio-test = "0.4"

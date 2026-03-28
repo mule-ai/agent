@@ -1,7 +1,10 @@
 //! Reasoning engine
 //! 
 //! Implements the reasoning engine as specified in SPEC.md
+//! Uses the LLM for actual chain-of-thought reasoning
 
+use crate::agent::llm::LlmClient;
+use crate::config::ModelConfig;
 use crate::models::Message;
 use std::collections::HashSet;
 
@@ -9,32 +12,125 @@ use std::collections::HashSet;
 pub struct ReasoningEngine {
     depth: usize,
     enabled: bool,
+    llm_client: Option<LlmClient>,
 }
 
 impl ReasoningEngine {
+    /// Create a new reasoning engine with LLM client
     pub fn new(depth: usize) -> Self {
         Self {
             depth,
             enabled: true,
+            llm_client: None,
+        }
+    }
+
+    /// Create with LLM client for actual reasoning
+    pub fn with_llm(depth: usize, model_config: ModelConfig) -> Self {
+        Self {
+            depth,
+            enabled: true,
+            llm_client: Some(LlmClient::new(model_config)),
         }
     }
 
     /// Enable or disable reasoning
+    #[allow(dead_code)]
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
     }
 
     /// Set reasoning depth
+    #[allow(dead_code)]
     pub fn set_depth(&mut self, depth: usize) {
         self.depth = depth;
     }
 
-    /// Perform reasoning on the context
+    /// Perform reasoning on the context using the LLM
     pub async fn think(&self, context: &[Message]) -> Result<String, ReasoningError> {
         if !self.enabled {
             return Ok(String::new());
         }
 
+        // If we have an LLM client, use it for actual reasoning
+        if let Some(client) = &self.llm_client {
+            return self.llm_think(client, context).await;
+        }
+
+        // Fallback to simple analysis
+        self.simple_think(context).await
+    }
+
+    /// LLM-powered reasoning
+    async fn llm_think(&self, client: &LlmClient, context: &[Message]) -> Result<String, ReasoningError> {
+        // Build reasoning prompt
+        let last_user_msg = context
+            .iter()
+            .rev()
+            .find(|m| matches!(m.role, crate::models::Role::User))
+            .map(|m| m.content.clone())
+            .unwrap_or_default();
+
+        let conversation_summary = self.summarize_conversation(context);
+
+        let reasoning_prompt = format!(
+            r#"You are a reasoning engine. Analyze the conversation and provide thoughtful reasoning.
+
+Conversation Summary:
+{}
+
+Last User Query: {}
+
+Perform {}-step reasoning:
+1. What is the user asking for?
+2. What information do I need to answer?
+3. What is my plan for answering?
+
+Think step by step and provide your reasoning in a clear format.
+"#, 
+            conversation_summary,
+            last_user_msg,
+            self.depth
+        );
+
+        let messages = vec![
+            Message::system("You are a helpful reasoning assistant. Think deeply and provide structured reasoning.".to_string()),
+            Message::user(reasoning_prompt),
+        ];
+
+        match client.chat(messages).await {
+            Ok(reasoning) => Ok(reasoning),
+            Err(e) => {
+                tracing::warn!("LLM reasoning failed, falling back to simple: {}", e);
+                self.simple_think(context).await
+            }
+        }
+    }
+
+    /// Summarize conversation for reasoning prompt
+    fn summarize_conversation(&self, context: &[Message]) -> String {
+        let mut summary = String::new();
+        
+        for msg in context.iter().take(10) {
+            let role = match msg.role {
+                crate::models::Role::System => "[System]",
+                crate::models::Role::User => "[User]",
+                crate::models::Role::Assistant => "[Assistant]",
+            };
+            
+            let content = Self::truncate(&msg.content, 200);
+            summary.push_str(&format!("{} {}\n", role, content));
+        }
+        
+        if context.len() > 10 {
+            summary.push_str(&format!("\n... and {} more messages", context.len() - 10));
+        }
+        
+        summary
+    }
+
+    /// Simple fallback reasoning without LLM
+    async fn simple_think(&self, context: &[Message]) -> Result<String, ReasoningError> {
         // Build reasoning chain
         let mut reasoning = String::new();
         reasoning.push_str("## Reasoning\n\n");
@@ -150,10 +246,16 @@ impl Default for ReasoningEngine {
 #[derive(Debug, thiserror::Error)]
 pub enum ReasoningError {
     #[error("Context too long: {0}")]
+    #[allow(dead_code)]
     ContextTooLong(usize),
     
     #[error("Invalid context: {0}")]
+    #[allow(dead_code)]
     InvalidContext(String),
+    
+    #[error("LLM error: {0}")]
+    #[allow(dead_code)]
+    LlmError(String),
 }
 
 #[cfg(test)]

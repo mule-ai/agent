@@ -6,7 +6,7 @@
 //! - Move concepts to training, delete transient facts
 
 use crate::models::{Memory, MemoryType};
-use chrono::{DateTime, Duration, Utc};
+use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
 
 /// Eviction policy configuration
@@ -35,29 +35,34 @@ impl Default for EvictionPolicy {
 
 impl EvictionPolicy {
     /// Create a new eviction policy with defaults
+    #[allow(dead_code)]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Set maximum age in hours
+    #[allow(dead_code)]
     pub fn with_max_age(mut self, hours: u32) -> Self {
         self.max_age_hours = hours;
         self
     }
 
     /// Set minimum quality score
+    #[allow(dead_code)]
     pub fn with_min_quality(mut self, score: f32) -> Self {
         self.min_quality_score = score;
         self
     }
 
     /// Set whether to evict concepts
+    #[allow(dead_code)]
     pub fn with_evict_concepts(mut self, evict: bool) -> Self {
         self.evict_concepts = evict;
         self
     }
 
     /// Set whether to keep facts
+    #[allow(dead_code)]
     pub fn with_keep_facts(mut self, keep: bool) -> Self {
         self.keep_facts = keep;
         self
@@ -76,10 +81,12 @@ pub enum EvictionDecision {
 }
 
 /// Memory eviction service
+#[allow(dead_code)]
 pub struct MemoryEviction {
     policy: EvictionPolicy,
 }
 
+#[allow(dead_code)]
 impl MemoryEviction {
     /// Create a new memory eviction service
     pub fn new(policy: EvictionPolicy) -> Self {
@@ -238,6 +245,7 @@ impl MemoryEviction {
 }
 
 impl Memory {
+    #[allow(dead_code)]
     fn memory_type(&self) -> &str {
         match self.memory_type {
             MemoryType::Fact => "fact",
@@ -250,6 +258,7 @@ impl Memory {
 
 /// Result of eviction evaluation
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct EvictionResult {
     pub memory_id: String,
     pub decision: EvictionDecision,
@@ -258,6 +267,7 @@ pub struct EvictionResult {
 
 /// Statistics about eviction
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
 pub struct EvictionStats {
     pub evaluated: usize,
     pub kept: usize,
@@ -266,6 +276,7 @@ pub struct EvictionStats {
 }
 
 impl EvictionStats {
+    #[allow(dead_code)]
     pub fn from_results(results: &[EvictionResult]) -> Self {
         let mut stats = Self::default();
         stats.evaluated = results.len();

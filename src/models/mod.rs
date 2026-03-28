@@ -1,5 +1,5 @@
 //! Data models for AGI Agent
-//! 
+//!
 //! These models match the SPEC.md definitions.
 
 use chrono::{DateTime, Utc};
@@ -101,6 +101,32 @@ impl Default for SessionStatus {
     }
 }
 
+/// Session summary for listing (without full message history)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionSummary {
+    pub id: String,
+    pub user_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub ended_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub status: SessionStatus,
+    pub message_count: usize,
+}
+
+impl SessionSummary {
+    /// Create a summary from a full session
+    pub fn from_session(session: &Session) -> Self {
+        Self {
+            id: session.id.clone(),
+            user_id: session.user_id.clone(),
+            created_at: session.created_at,
+            ended_at: session.ended_at,
+            status: session.status.clone(),
+            message_count: session.messages.len(),
+        }
+    }
+}
+
 /// Session model as defined in SPEC
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
@@ -127,6 +153,7 @@ impl Session {
         }
     }
 
+    #[allow(dead_code)]
     pub fn with_user(user_id: String) -> Self {
         Self {
             user_id: Some(user_id),
@@ -138,6 +165,7 @@ impl Session {
         self.messages.push(message);
     }
 
+    #[allow(dead_code)]
     pub fn add_memory(&mut self, memory_id: String) {
         self.memories.push(memory_id);
     }
@@ -147,6 +175,7 @@ impl Session {
         self.ended_at = Some(Utc::now());
     }
 
+    #[allow(dead_code)]
     pub fn message_count(&self) -> usize {
         self.messages.len()
     }
@@ -182,6 +211,7 @@ pub struct ToolCall {
 }
 
 impl ToolCall {
+    #[allow(dead_code)]
     pub fn new(name: String, arguments: String) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
@@ -202,6 +232,7 @@ pub struct ToolResult {
 }
 
 impl ToolResult {
+    #[allow(dead_code)]
     pub fn success(tool_call_id: String, name: String, content: String) -> Self {
         Self {
             tool_call_id,
@@ -212,6 +243,7 @@ impl ToolResult {
         }
     }
 
+    #[allow(dead_code)]
     pub fn error(tool_call_id: String, name: String, error: String) -> Self {
         Self {
             tool_call_id,
@@ -223,12 +255,126 @@ impl ToolResult {
     }
 }
 
+/// Content part for multi-modal messages
+/// Supports text, images (URL or base64), and audio (URL or base64)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum ContentPart {
+    /// Plain text content
+    Text { text: String },
+    /// Image from URL
+    ImageUrl {
+        url: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+    },
+    /// Image as base64-encoded data
+    ImageBase64 {
+        data: String,
+        media_type: Option<String>,
+    },
+    /// Audio from URL
+    AudioUrl { url: String },
+    /// Audio as base64-encoded data
+    AudioBase64 {
+        data: String,
+        media_type: Option<String>,
+    },
+}
+
+impl ContentPart {
+    /// Create a text content part
+    pub fn text(text: impl Into<String>) -> Self {
+        ContentPart::Text { text: text.into() }
+    }
+
+    /// Create an image URL content part (for future use)
+    #[allow(dead_code)]
+    pub fn image_url(url: impl Into<String>) -> Self {
+        ContentPart::ImageUrl {
+            url: url.into(),
+            detail: None,
+        }
+    }
+
+    /// Create an image URL content part with detail level (for future use)
+    #[allow(dead_code)]
+    pub fn image_url_with_detail(url: impl Into<String>, detail: impl Into<String>) -> Self {
+        ContentPart::ImageUrl {
+            url: url.into(),
+            detail: Some(detail.into()),
+        }
+    }
+
+    /// Create an image base64 content part (for future use)
+    #[allow(dead_code)]
+    pub fn image_base64(data: impl Into<String>, media_type: Option<String>) -> Self {
+        ContentPart::ImageBase64 {
+            data: data.into(),
+            media_type,
+        }
+    }
+
+    /// Convert to OpenAI content format
+    pub fn to_openai(&self) -> serde_json::Value {
+        match self {
+            ContentPart::Text { text } => serde_json::json!({
+                "type": "text",
+                "text": text
+            }),
+            ContentPart::ImageUrl { url, detail } => {
+                let mut obj = serde_json::json!({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": url
+                    }
+                });
+                if let Some(d) = detail {
+                    obj["image_url"]["detail"] = serde_json::json!(d);
+                }
+                obj
+            }
+            ContentPart::ImageBase64 { data, media_type } => {
+                serde_json::json!({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": format!("data:{};base64,{}",
+                            media_type.as_deref().unwrap_or("image/png"),
+                            data)
+                    }
+                })
+            }
+            ContentPart::AudioUrl { url } => serde_json::json!({
+                "type": "input_audio",
+                "input_audio": {
+                    "url": url
+                }
+            }),
+            ContentPart::AudioBase64 { data, media_type } => serde_json::json!({
+                "type": "input_audio",
+                "input_audio": {
+                    "data": format!("data:{};base64,{}",
+                        media_type.as_deref().unwrap_or("audio/wav"),
+                        data),
+                    "format": media_type.as_deref().unwrap_or("wav")
+                }
+            }),
+        }
+    }
+}
+
 /// Message model as defined in SPEC
+/// Now supports multi-modal content with Vec<ContentPart>
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub id: String,
     pub role: Role,
+    /// Content can be a single string (backward compatible) or Vec<ContentPart>
+    #[serde(default)]
     pub content: String,
+    /// Multi-modal content parts (takes precedence over content if non-empty)
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub content_parts: Vec<ContentPart>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -245,6 +391,31 @@ impl Message {
             id: Uuid::new_v4().to_string(),
             role,
             content,
+            content_parts: Vec::new(),
+            tool_calls: None,
+            tool_results: None,
+            memory_refs: Vec::new(),
+            reasoning: None,
+        }
+    }
+
+    /// Create a multi-modal message with content parts
+    pub fn with_parts(role: Role, parts: Vec<ContentPart>) -> Self {
+        Self {
+            id: Uuid::new_v4().to_string(),
+            role,
+            content: parts
+                .iter()
+                .filter_map(|p| {
+                    if let ContentPart::Text { text } = p {
+                        Some(text.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+            content_parts: parts,
             tool_calls: None,
             tool_results: None,
             memory_refs: Vec::new(),
@@ -264,14 +435,81 @@ impl Message {
         Self::new(Role::Assistant, content)
     }
 
+    /// Create a user message with image (for future use)
+    #[allow(dead_code)]
+    pub fn user_with_image(content: String, image_url: String) -> Self {
+        let parts = vec![
+            ContentPart::text(content),
+            ContentPart::image_url(image_url),
+        ];
+        Self::with_parts(Role::User, parts)
+    }
+
+    #[allow(dead_code)]
     pub fn with_tool_calls(mut self, calls: Vec<ToolCall>) -> Self {
         self.tool_calls = Some(calls);
         self
     }
 
+    #[allow(dead_code)]
     pub fn with_reasoning(mut self, reasoning: String) -> Self {
         self.reasoning = Some(reasoning);
         self
+    }
+
+    /// Get the text content (backward compatible)
+    #[allow(dead_code)]
+    pub fn get_text(&self) -> String {
+        if !self.content_parts.is_empty() {
+            self.content_parts
+                .iter()
+                .filter_map(|p| {
+                    if let ContentPart::Text { text } = p {
+                        Some(text.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            self.content.clone()
+        }
+    }
+
+    /// Check if message has multi-modal content
+    #[allow(dead_code)]
+    pub fn has_multimodal_content(&self) -> bool {
+        !self.content_parts.is_empty()
+            || self.content.contains("data:image")
+            || self.content.contains("data:audio")
+    }
+
+    /// Convert to OpenAI message format for API calls
+    pub fn to_openai(&self) -> serde_json::Value {
+        if self.content_parts.is_empty() {
+            // Simple text message
+            serde_json::json!({
+                "role": match self.role {
+                    Role::System => "system",
+                    Role::User => "user",
+                    Role::Assistant => "assistant",
+                },
+                "content": self.content
+            })
+        } else {
+            // Multi-modal message
+            let content: Vec<serde_json::Value> =
+                self.content_parts.iter().map(|p| p.to_openai()).collect();
+            serde_json::json!({
+                "role": match self.role {
+                    Role::System => "system",
+                    Role::User => "user",
+                    Role::Assistant => "assistant",
+                },
+                "content": content
+            })
+        }
     }
 }
 
@@ -282,6 +520,7 @@ pub enum TrainingSource {
     Session,
     Search,
     Manual,
+    Memory,
 }
 
 impl Default for TrainingSource {
@@ -434,10 +673,10 @@ mod tests {
     fn test_session_lifecycle() {
         let mut session = Session::new();
         assert_eq!(session.status, SessionStatus::Active);
-        
+
         session.add_message(Message::user("Hello".to_string()));
         assert_eq!(session.messages.len(), 1);
-        
+
         session.end();
         assert_eq!(session.status, SessionStatus::Ended);
         assert!(session.ended_at.is_some());
@@ -448,10 +687,10 @@ mod tests {
         let msg = Message::new(Role::User, "Hello".to_string());
         assert_eq!(msg.role, Role::User);
         assert_eq!(msg.content, "Hello");
-        
+
         let assistant = Message::assistant("Hi there".to_string());
         assert_eq!(assistant.role, Role::Assistant);
-        
+
         let system = Message::system("You are helpful".to_string());
         assert_eq!(system.role, Role::System);
     }
@@ -459,21 +698,29 @@ mod tests {
     #[test]
     fn test_message_with_tool_calls() {
         let tool_call = ToolCall::new("search".to_string(), r#"{"query":"test"}"#.to_string());
-        let msg = Message::user("Search for something".to_string())
-            .with_tool_calls(vec![tool_call]);
-        
+        let msg =
+            Message::user("Search for something".to_string()).with_tool_calls(vec![tool_call]);
+
         assert!(msg.tool_calls.is_some());
         assert_eq!(msg.tool_calls.unwrap().len(), 1);
     }
 
     #[test]
     fn test_tool_result() {
-        let success = ToolResult::success("call-1".to_string(), "search".to_string(), "Found results".to_string());
+        let success = ToolResult::success(
+            "call-1".to_string(),
+            "search".to_string(),
+            "Found results".to_string(),
+        );
         assert!(success.success);
         assert_eq!(success.content, "Found results");
         assert!(success.error.is_none());
-        
-        let failure = ToolResult::error("call-2".to_string(), "bash".to_string(), "Command failed".to_string());
+
+        let failure = ToolResult::error(
+            "call-2".to_string(),
+            "bash".to_string(),
+            "Command failed".to_string(),
+        );
         assert!(!failure.success);
         assert_eq!(failure.error, Some("Command failed".to_string()));
     }
@@ -482,11 +729,11 @@ mod tests {
     fn test_training_job_lifecycle() {
         let mut job = TrainingJob::new(3, 125);
         assert_eq!(job.status, TrainingStatus::Pending);
-        
+
         job.start();
         assert_eq!(job.status, TrainingStatus::Training);
         assert!(job.started_at.is_some());
-        
+
         job.complete();
         assert_eq!(job.status, TrainingStatus::Completed);
         assert!(job.completed_at.is_some());
@@ -505,7 +752,7 @@ mod tests {
         let user = Role::User;
         let json = serde_json::to_string(&user).unwrap();
         assert_eq!(json, "\"user\"");
-        
+
         let deserialized: Role = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized, Role::User);
     }

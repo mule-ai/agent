@@ -1,8 +1,14 @@
 //! Chat completions API handler
-//! 
+//!
 //! Implements the OpenAI-compatible chat API as specified in SPEC.md
 
+use crate::knowledge::{ArxivClient, WikipediaClient, WebFetcher, KnowledgeConfig};
 use crate::models::{Message, Role};
+use crate::services::{
+    CuriosityEngine, MemoryEvictionService, SearchLearningService, SessionReviewService, 
+    OnlineLearningService, SelfImproveEngine, TheoryOfMindEngine, BatchTrainingService,
+};
+use crate::tools::ToolRegistry;
 use axum::{
     extract::{State, WebSocketUpgrade},
     http::StatusCode,
@@ -19,6 +25,26 @@ pub struct AppState {
     pub agent: Arc<RwLock<Option<crate::agent::Agent>>>,
     pub memory_store: Arc<crate::memory::SqliteMemoryStore>,
     pub embedding_client: Arc<crate::memory::EmbeddingClient>,
+    #[allow(dead_code)]
+    pub tool_registry: Arc<ToolRegistry>,
+    #[allow(dead_code)]
+    pub service_manager: Arc<crate::services::ServiceManager>,
+    pub session_review_service: Arc<SessionReviewService>,
+    pub memory_eviction_service: Arc<MemoryEvictionService>,
+    pub search_learning_service: Arc<SearchLearningService>,
+    pub curiosity_engine: Arc<CuriosityEngine>,
+    pub online_learning_service: Arc<OnlineLearningService>,
+    pub self_improve_engine: Arc<SelfImproveEngine>,
+    pub theory_of_mind_engine: Arc<TheoryOfMindEngine>,
+    pub batch_training_service: Arc<BatchTrainingService>,
+    pub session_store: Option<Arc<crate::agent::SessionStore>>,
+    // External knowledge sources
+    pub wikipedia: WikipediaClient,
+    pub arxiv: ArxivClient,
+    pub web_fetcher: WebFetcher,
+    pub knowledge_config: KnowledgeConfig,
+    // Dynamic model configuration for hot-swapping
+    pub model_config: Arc<RwLock<crate::config::ModelConfig>>,
 }
 
 // ============================================================================
@@ -31,20 +57,63 @@ pub struct ChatRequest {
     pub model: String,
     pub messages: Vec<ChatMessage>,
     #[serde(default)]
+    #[allow(dead_code)]
     pub stream: Option<bool>,
     #[serde(default)]
+    #[allow(dead_code)]
     pub temperature: Option<f32>,
     #[serde(default)]
+    #[allow(dead_code)]
     pub max_tokens: Option<i32>,
 }
 
-/// Chat message (OpenAI-compatible)
+/// Content part for multi-modal messages (API-level)
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ChatContentPart {
+    /// Text content
+    Text { text: String },
+    /// Image from URL
+    ImageUrl { image_url: ImageUrlContent },
+    /// Input audio
+    InputAudio { input_audio: InputAudioContent },
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ImageUrlContent {
+    pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct InputAudioContent {
+    pub url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+}
+
+/// Chat message (OpenAI-compatible) with multi-modal support
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ChatMessage {
     pub role: String,
-    pub content: String,
+    /// Content can be string (text only) or array of content parts (multi-modal)
+    #[serde(default)]
+    pub content: Option<ChatContent>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+}
+
+/// Chat content - either simple text or array of content parts
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(untagged)]
+pub enum ChatContent {
+    /// Simple text content
+    Text(String),
+    /// Array of content parts for multi-modal
+    Parts(Vec<ChatContentPart>),
 }
 
 impl ChatMessage {
@@ -54,19 +123,109 @@ impl ChatMessage {
             "assistant" => Role::Assistant,
             _ => Role::User,
         };
-        Message::new(role, self.content)
+
+        match self.content {
+            Some(ChatContent::Text(text)) => Message::new(role, text),
+            Some(ChatContent::Parts(parts)) => {
+                let content_parts: Vec<crate::models::ContentPart> = parts
+                    .into_iter()
+                    .filter_map(|p| match p {
+                        ChatContentPart::Text { text } => {
+                            Some(crate::models::ContentPart::text(text))
+                        }
+                        ChatContentPart::ImageUrl { image_url } => {
+                            Some(crate::models::ContentPart::ImageUrl {
+                                url: image_url.url,
+                                detail: image_url.detail,
+                            })
+                        }
+                        ChatContentPart::InputAudio { input_audio } => {
+                            if let Some(url) = input_audio.url {
+                                Some(crate::models::ContentPart::AudioUrl { url })
+                            } else if let Some(data) = input_audio.data {
+                                Some(crate::models::ContentPart::AudioBase64 {
+                                    data,
+                                    media_type: input_audio.format,
+                                })
+                            } else {
+                                None
+                            }
+                        }
+                    })
+                    .collect();
+                Message::with_parts(role, content_parts)
+            }
+            None => Message::new(role, String::new()),
+        }
     }
 
+    #[allow(dead_code)]
     pub fn from_message(msg: &Message) -> Self {
         let role = match msg.role {
             Role::System => "system",
             Role::User => "user",
             Role::Assistant => "assistant",
         };
-        Self {
-            role: role.to_string(),
-            content: msg.content.clone(),
-            name: None,
+
+        if msg.content_parts.is_empty() {
+            Self {
+                role: role.to_string(),
+                content: Some(ChatContent::Text(msg.content.clone())),
+                name: None,
+            }
+        } else {
+            let parts: Vec<ChatContentPart> = msg
+                .content_parts
+                .iter()
+                .filter_map(|p| match p {
+                    crate::models::ContentPart::Text { text } => {
+                        Some(ChatContentPart::Text { text: text.clone() })
+                    }
+                    crate::models::ContentPart::ImageUrl { url, detail } => {
+                        Some(ChatContentPart::ImageUrl {
+                            image_url: ImageUrlContent {
+                                url: url.clone(),
+                                detail: detail.clone(),
+                            },
+                        })
+                    }
+                    crate::models::ContentPart::ImageBase64 { data, media_type } => {
+                        Some(ChatContentPart::ImageUrl {
+                            image_url: ImageUrlContent {
+                                url: format!(
+                                    "data:{};base64,{}",
+                                    media_type.as_deref().unwrap_or("image/png"),
+                                    data
+                                ),
+                                detail: None,
+                            },
+                        })
+                    }
+                    crate::models::ContentPart::AudioUrl { url } => {
+                        Some(ChatContentPart::InputAudio {
+                            input_audio: InputAudioContent {
+                                url: Some(url.clone()),
+                                data: None,
+                                format: None,
+                            },
+                        })
+                    }
+                    crate::models::ContentPart::AudioBase64 { data, media_type } => {
+                        Some(ChatContentPart::InputAudio {
+                            input_audio: InputAudioContent {
+                                url: None,
+                                data: Some(data.clone()),
+                                format: media_type.clone(),
+                            },
+                        })
+                    }
+                })
+                .collect();
+            Self {
+                role: role.to_string(),
+                content: Some(ChatContent::Parts(parts)),
+                name: None,
+            }
         }
     }
 }
@@ -130,31 +289,38 @@ pub async fn chat_handler(
     State(state): State<Arc<AppState>>,
     Json(request): Json<ChatRequest>,
 ) -> Result<Json<ChatResponse>, (StatusCode, Json<serde_json::Value>)> {
-    let messages: Vec<Message> = request.messages
+    let messages: Vec<Message> = request
+        .messages
         .into_iter()
         .map(|m| m.into_message())
         .collect();
 
     let agent = state.agent.read().await;
-    
+
     let agent = agent.as_ref().ok_or_else(|| {
-        (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({
-            "error": {
-                "message": "Agent not initialized",
-                "type": "service_unavailable",
-                "code": "agent_not_ready"
-            }
-        })))
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": {
+                    "message": "Agent not initialized",
+                    "type": "service_unavailable",
+                    "code": "agent_not_ready"
+                }
+            })),
+        )
     })?;
 
     let response = agent.chat(messages).await.map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
-            "error": {
-                "message": e.to_string(),
-                "type": "internal_error",
-                "code": "internal_error"
-            }
-        })))
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": {
+                    "message": e.to_string(),
+                    "type": "internal_error",
+                    "code": "internal_error"
+                }
+            })),
+        )
     })?;
 
     Ok(Json(ChatResponse {
@@ -166,7 +332,7 @@ pub async fn chat_handler(
             index: 0,
             message: ChatMessage {
                 role: "assistant".to_string(),
-                content: response.content,
+                content: Some(ChatContent::Text(response.content)),
                 name: None,
             },
             finish_reason: "stop".to_string(),
@@ -180,6 +346,7 @@ pub async fn chat_handler(
 }
 
 /// WebSocket handler for streaming (placeholder)
+#[allow(dead_code)]
 pub async fn websocket_handler(
     ws: WebSocketUpgrade,
     State(_state): State<Arc<AppState>>,
@@ -201,7 +368,7 @@ mod tests {
     fn test_chat_message_into_message() {
         let chat_msg = ChatMessage {
             role: "user".to_string(),
-            content: "Hello".to_string(),
+            content: Some(ChatContent::Text("Hello".to_string())),
             name: None,
         };
 
@@ -214,9 +381,12 @@ mod tests {
     fn test_message_roundtrip() {
         let msg = Message::user("Test content".to_string());
         let chat_msg = ChatMessage::from_message(&msg);
-        
+
         assert_eq!(chat_msg.role, "user");
-        assert_eq!(chat_msg.content, "Test content");
+        match chat_msg.content {
+            Some(ChatContent::Text(text)) => assert_eq!(text, "Test content"),
+            _ => panic!("Expected text content"),
+        }
     }
 
     #[test]

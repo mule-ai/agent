@@ -13,8 +13,8 @@ pub mod eviction;
 
 pub use embedding::EmbeddingClient;
 pub use store::SqliteMemoryStore;
-pub use retrieval::MemoryRetriever;
-pub use eviction::{EvictionPolicy, MemoryEviction};
+#[allow(unused)]
+pub use eviction::EvictionPolicy;
 
 #[cfg(test)]
 mod tests {

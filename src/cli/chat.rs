@@ -170,9 +170,10 @@ async fn call_ollama(model: &str, messages: &[Message]) -> Result<String> {
         .send()
         .await?;
     
-    if !response.status().is_success() {
+    let status = response.status();
+    if !status.is_success() {
         let error_text = response.text().await.unwrap_or_default();
-        anyhow::bail!("Ollama API error: {} - {}", response.status(), error_text);
+        anyhow::bail!("Ollama API error: {} - {}", status, error_text);
     }
     
     let response_json: serde_json::Value = response.json().await?;
@@ -222,9 +223,10 @@ async fn call_ollama_with_adapter(model: &str, adapter: &str, messages: &[Messag
         .send()
         .await?;
     
-    if !response.status().is_success() {
+    let status = response.status();
+    if !status.is_success() {
         let error_text = response.text().await.unwrap_or_default();
-        anyhow::bail!("Ollama API error: {} - {}", response.status(), error_text);
+        anyhow::bail!("Ollama API error: {} - {}", status, error_text);
     }
     
     let response_json: serde_json::Value = response.json().await?;

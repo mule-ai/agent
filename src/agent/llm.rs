@@ -1,14 +1,34 @@
 //! LLM client for communicating with llama.cpp OpenAI-compatible API
-//! 
-//! Calls llama-server for chat completions
+//!
+//! Calls llama-server for chat completions with optional tool support
 
 use crate::config::ModelConfig;
 use crate::models::Message;
 use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use tokio::sync::RwLock;
+
+/// Tool definition for function calling
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolDefinition {
+    pub name: String,
+    pub description: String,
+    pub parameters: serde_json::Value,
+}
+
+/// Tool call returned by the LLM
+#[derive(Debug, Clone, Deserialize)]
+pub struct ToolCall {
+    pub id: String,
+    #[serde(rename = "function")]
+    pub function: ToolCallFunction,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ToolCallFunction {
+    pub name: String,
+    pub arguments: serde_json::Value,
+}
 
 /// LLM client for llama.cpp API
 pub struct LlmClient {
@@ -30,28 +50,43 @@ impl LlmClient {
 
     /// Send a chat request to the LLM
     pub async fn chat(&self, messages: Vec<Message>) -> Result<String> {
-        let api_messages: Vec<ApiMessage> = messages
-            .iter()
-            .map(|m| ApiMessage {
-                role: match m.role {
-                    crate::models::Role::System => "system",
-                    crate::models::Role::User => "user",
-                    crate::models::Role::Assistant => "assistant",
-                }
-                .to_string(),
-                content: m.content.clone(),
-            })
-            .collect();
+        let result = self.chat_with_tools(messages, None).await?;
+        Ok(result.content)
+    }
+
+    /// Send a chat request with tools to the LLM
+    pub async fn chat_with_tools(
+        &self,
+        messages: Vec<Message>,
+        tools: Option<Vec<ToolDefinition>>,
+    ) -> Result<ChatResult> {
+        let api_messages: Vec<serde_json::Value> = messages.iter().map(|m| m.to_openai()).collect();
 
         let request = ChatRequest {
             model: self.config.name.clone(),
             messages: api_messages,
             stream: false,
+            tools: tools.map(|t| {
+                t.into_iter()
+                    .map(|tool| {
+                        serde_json::json!({
+                            "type": "function",
+                            "function": {
+                                "name": tool.name,
+                                "description": tool.description,
+                                "parameters": tool.parameters,
+                            }
+                        })
+                    })
+                    .collect()
+            }),
+            tool_choice: Some(serde_json::json!("auto")),
         };
 
         let url = format!("{}/v1/chat/completions", self.config.base_url);
-        
-        let response = self.client
+
+        let response = self
+            .client
             .post(&url)
             .json(&request)
             .send()
@@ -69,57 +104,45 @@ impl LlmClient {
             .await
             .context("Failed to parse LLM response")?;
 
-        Ok(chat_response
-            .choices
-            .into_iter()
-            .next()
-            .map(|c| c.message.content)
-            .unwrap_or_default())
+        let choice = chat_response.choices.into_iter().next().unwrap_or_default();
+
+        let tool_calls = choice.message.tool_calls.map(|calls| {
+            calls
+                .into_iter()
+                .map(|tc| ToolCall {
+                    id: tc.id,
+                    function: ToolCallFunction {
+                        name: tc.function.name,
+                        arguments: tc.function.arguments,
+                    },
+                })
+                .collect()
+        });
+
+        Ok(ChatResult {
+            content: choice.message.content,
+            tool_calls,
+        })
     }
 
-    /// Generate embedding for text
-    pub async fn generate_embedding(&self, text: &str) -> Result<Vec<f32>> {
-        // llama.cpp doesn't have a built-in embedding endpoint
-        // For now, return a simple hash-based embedding
-        // TODO: Use a dedicated embedding service
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        
-        let mut hasher = DefaultHasher::new();
-        text.hash(&mut hasher);
-        let hash = hasher.finish();
-        
-        let mut embedding = Vec::with_capacity(self.config.embedding_dim);
-        let mut state = hash;
-        for _ in 0..self.config.embedding_dim {
-            state = state.wrapping_mul(1103515245).wrapping_add(12345);
-            let value = ((state as u32) as f32 / u32::MAX as f32) * 2.0 - 1.0;
-            embedding.push(value);
-        }
-        
-        // Normalize
-        let magnitude: f32 = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if magnitude > 0.0 {
-            for v in &mut embedding {
-                *v /= magnitude;
-            }
-        }
-        
-        Ok(embedding)
-    }
+}
+
+/// Result from a chat completion
+#[derive(Debug, Clone)]
+pub struct ChatResult {
+    pub content: String,
+    pub tool_calls: Option<Vec<ToolCall>>,
 }
 
 #[derive(Debug, Serialize)]
 struct ChatRequest {
     model: String,
-    messages: Vec<ApiMessage>,
+    messages: Vec<serde_json::Value>,
     stream: bool,
-}
-
-#[derive(Debug, Serialize)]
-struct ApiMessage {
-    role: String,
-    content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<serde_json::Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -132,9 +155,35 @@ struct Choice {
     message: ResponseMessage,
 }
 
+impl Default for Choice {
+    fn default() -> Self {
+        Choice {
+            message: ResponseMessage {
+                content: String::new(),
+                tool_calls: None,
+            },
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct ResponseMessage {
     content: String,
+    #[serde(default)]
+    tool_calls: Option<Vec<ResponseToolCall>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResponseToolCall {
+    id: String,
+    #[serde(rename = "function")]
+    function: ResponseToolCallFunction,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResponseToolCallFunction {
+    name: String,
+    arguments: serde_json::Value,
 }
 
 #[cfg(test)]

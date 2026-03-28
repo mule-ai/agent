@@ -116,11 +116,11 @@ pub struct TrainingConfig {
     pub output_path: PathBuf,
     #[serde(default = "default_epochs")]
     pub epochs: usize,
-    #[serde(default = "default_batch_size")]
+    #[serde(default = "default_training_batch_size")]
     pub batch_size: usize,
     #[serde(default)]
     pub gradient_accumulation_steps: usize,
-    #[serde(default = "default_learning_rate")]
+    #[serde(default = "default_training_learning_rate")]
     pub learning_rate: f32,
     #[serde(default = "default_lora_rank")]
     pub lora_rank: usize,
@@ -135,8 +135,8 @@ pub struct TrainingConfig {
 }
 
 fn default_epochs() -> usize { 3 }
-fn default_batch_size() -> usize { 4 }
-fn default_learning_rate() -> f32 { 1e-4 }
+fn default_training_batch_size() -> usize { 4 }
+fn default_training_learning_rate() -> f32 { 1e-4 }
 fn default_lora_rank() -> usize { 16 }
 
 impl Default for TrainingConfig {
@@ -155,6 +155,55 @@ impl Default for TrainingConfig {
             lr_scheduler: "cosine".to_string(),
             early_stopping_patience: 3,
             min_loss_improvement: 0.01,
+        }
+    }
+}
+
+/// Online Learning configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OnlineLearningConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_online_batch_size")]
+    pub batch_size: usize,
+    #[serde(default = "default_max_buffer_size")]
+    pub max_buffer_size: usize,
+    #[serde(default = "default_replay_ratio")]
+    pub replay_ratio: f32,
+    #[serde(default = "default_online_learning_rate")]
+    pub learning_rate: f32,
+    #[serde(default = "default_min_buffer_for_training")]
+    pub min_buffer_for_training: usize,
+    #[serde(default)]
+    pub min_learning_rate: f32,
+    #[serde(default)]
+    pub max_learning_rate: f32,
+    #[serde(default = "default_update_interval_seconds")]
+    pub update_interval_seconds: u64,
+    #[serde(default)]
+    pub adaptive_learning_rate: bool,
+}
+
+fn default_online_batch_size() -> usize { 16 }
+fn default_max_buffer_size() -> usize { 1000 }
+fn default_replay_ratio() -> f32 { 0.3 }
+fn default_online_learning_rate() -> f32 { 1e-5 }
+fn default_min_buffer_for_training() -> usize { 50 }
+fn default_update_interval_seconds() -> u64 { 300 }
+
+impl Default for OnlineLearningConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            batch_size: 16,
+            max_buffer_size: 1000,
+            replay_ratio: 0.3,
+            learning_rate: 1e-5,
+            min_buffer_for_training: 50,
+            min_learning_rate: 1e-6,
+            max_learning_rate: 1e-4,
+            update_interval_seconds: 300,
+            adaptive_learning_rate: true,
         }
     }
 }
@@ -185,6 +234,8 @@ pub struct AppConfig {
     pub memory: MemoryConfig,
     pub search: SearchConfig,
     pub training: TrainingConfig,
+    #[serde(default)]
+    pub online_learning: OnlineLearningConfig,
     pub summarization: SummarizationConfig,
 }
 
@@ -196,6 +247,7 @@ impl Default for AppConfig {
             memory: MemoryConfig::default(),
             search: SearchConfig::default(),
             training: TrainingConfig::default(),
+            online_learning: OnlineLearningConfig::default(),
             summarization: SummarizationConfig::default(),
         }
     }

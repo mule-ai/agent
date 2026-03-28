@@ -119,9 +119,10 @@ async fn start_finetune(steps: usize, epochs: usize) -> Result<String> {
         .send()
         .await?;
     
-    if !response.status().is_success() {
+    let status = response.status();
+    if !status.is_success() {
         let error_text = response.text().await.unwrap_or_default();
-        anyhow::bail!("Ollama fine-tune API error: {} - {}", response.status(), error_text);
+        anyhow::bail!("Ollama fine-tune API error: {} - {}", status, error_text);
     }
     
     let response_json: serde_json::Value = response.json().await?;
@@ -151,7 +152,7 @@ async fn monitor_training(job_id: &str) -> Result<()> {
                         if let Some(l) = loss {
                             print!(" | Loss: {:.4}", l);
                         }
-                        io::Write::flush(&mut io::stdout())?;
+                        std::io::Write::flush(&mut std::io::stdout())?;
                         
                         if state == "completed" || state == "failed" || state == "cancelled" {
                             println!();

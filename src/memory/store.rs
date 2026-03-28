@@ -5,7 +5,7 @@
 use crate::models::{Memory, MemoryType, QueryResult};
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use parking_lot::Mutex;
 use tantivy::collector::TopDocs;
@@ -14,6 +14,7 @@ use tantivy::schema::*;
 use tantivy::{Index, IndexWriter, ReloadPolicy, TantivyDocument};
 
 /// Memory store trait for abstraction
+#[allow(dead_code)]
 pub trait MemoryStore: Send + Sync {
     fn store(&self, memory: &Memory) -> Result<()>;
     fn update(&self, memory: &Memory) -> Result<()>;
@@ -27,6 +28,7 @@ pub trait MemoryStore: Send + Sync {
 pub struct SqliteMemoryStore {
     conn: Arc<Mutex<Connection>>,
     index: Index,
+    #[allow(dead_code)]
     schema: Schema,
     // Schema fields
     id_field: Field,
