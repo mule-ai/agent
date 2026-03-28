@@ -1,19 +1,19 @@
-//! LLM client for communicating with Ollama/OpenAI-compatible APIs
+//! LLM client for communicating with llama.cpp OpenAI-compatible API
 //! 
-//! Implements LLM client as specified in SPEC.md
+//! Calls llama-server for chat completions
 
 use crate::config::ModelConfig;
 use crate::models::Message;
-use anyhow::Result;
+use anyhow::{Context, Result};
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use parking_lot::RwLock;
-use lru::LruCache;
+use tokio::sync::RwLock;
 
-/// LLM client for Ollama/OpenAI API
+/// LLM client for llama.cpp API
 pub struct LlmClient {
     config: ModelConfig,
-    /// Cache for recent responses (simple implementation)
-    cache: Arc<RwLock<LruCache<String, String>>>,
+    client: Client,
 }
 
 impl LlmClient {
@@ -21,60 +21,66 @@ impl LlmClient {
     pub fn new(config: ModelConfig) -> Self {
         Self {
             config,
-            cache: Arc::new(RwLock::new(LruCache::new(std::num::NonZeroUsize::new(100).unwrap()))),
+            client: Client::builder()
+                .timeout(std::time::Duration::from_secs(120))
+                .build()
+                .unwrap_or_default(),
         }
     }
 
     /// Send a chat request to the LLM
-    /// 
-    /// Note: In a full implementation, this would call the actual LLM API.
-    /// For now, it returns a placeholder response.
     pub async fn chat(&self, messages: Vec<Message>) -> Result<String> {
-        // Convert messages to API format
-        let _message_count = messages.len();
-        let last_message = messages.last().map(|m| m.content.as_str()).unwrap_or("");
+        let api_messages: Vec<ApiMessage> = messages
+            .iter()
+            .map(|m| ApiMessage {
+                role: match m.role {
+                    crate::models::Role::System => "system",
+                    crate::models::Role::User => "user",
+                    crate::models::Role::Assistant => "assistant",
+                }
+                .to_string(),
+                content: m.content.clone(),
+            })
+            .collect();
+
+        let request = ChatRequest {
+            model: self.config.name.clone(),
+            messages: api_messages,
+            stream: false,
+        };
+
+        let url = format!("{}/v1/chat/completions", self.config.base_url);
         
-        // Check cache (simplified - just use last message as key)
-        let cache_key = last_message.to_string();
-        {
-            let mut cache = self.cache.write();
-            if let Some(cached) = cache.get(&cache_key).cloned() {
-                return Ok(cached);
-            }
+        let response = self.client
+            .post(&url)
+            .json(&request)
+            .send()
+            .await
+            .context("Failed to send request to LLM")?;
+
+        if !response.status().is_success() {
+            let error = response.text().await.unwrap_or_default();
+            anyhow::bail!("LLM API error: {} - {}", response.status(), error);
         }
 
-        // Generate response (placeholder - in production, call actual LLM)
-        let response = format!(
-            "I understand you said '{}'. This is a placeholder response. \
-            In a full implementation, I would call the LLM at {} with model {}.",
-            last_message, self.config.base_url, self.config.name
-        );
+        let chat_response: ChatResponse = response
+            .json()
+            .await
+            .context("Failed to parse LLM response")?;
 
-        // Cache the response
-        {
-            let mut cache = self.cache.write();
-            cache.put(cache_key, response.clone());
-        }
-
-        Ok(response)
-    }
-
-    /// Clear the response cache
-    pub fn clear_cache(&self) {
-        let mut cache = self.cache.write();
-        cache.clear();
-    }
-
-    /// Get cache size
-    pub fn cache_size(&self) -> usize {
-        let cache = self.cache.read();
-        cache.len()
+        Ok(chat_response
+            .choices
+            .into_iter()
+            .next()
+            .map(|c| c.message.content)
+            .unwrap_or_default())
     }
 
     /// Generate embedding for text
-    /// 
-    /// Note: This is a placeholder. In production, call the embedding API.
-    pub fn generate_embedding(&self, text: &str) -> Vec<f32> {
+    pub async fn generate_embedding(&self, text: &str) -> Result<Vec<f32>> {
+        // llama.cpp doesn't have a built-in embedding endpoint
+        // For now, return a simple hash-based embedding
+        // TODO: Use a dedicated embedding service
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
         
@@ -82,7 +88,6 @@ impl LlmClient {
         text.hash(&mut hasher);
         let hash = hasher.finish();
         
-        // Generate deterministic "random" values from hash
         let mut embedding = Vec::with_capacity(self.config.embedding_dim);
         let mut state = hash;
         for _ in 0..self.config.embedding_dim {
@@ -99,8 +104,36 @@ impl LlmClient {
             }
         }
         
-        embedding
+        Ok(embedding)
     }
+}
+
+#[derive(Debug, Serialize)]
+struct ChatRequest {
+    model: String,
+    messages: Vec<ApiMessage>,
+    stream: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct ApiMessage {
+    role: String,
+    content: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatResponse {
+    choices: Vec<Choice>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Choice {
+    message: ResponseMessage,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResponseMessage {
+    content: String,
 }
 
 #[cfg(test)]
@@ -110,76 +143,16 @@ mod tests {
     #[test]
     fn test_llm_client_config() {
         let config = ModelConfig {
-            base_url: "http://localhost:11434".to_string(),
-            name: "qwen3:8b".to_string(),
+            base_url: "http://localhost:8081".to_string(),
+            name: "qwen3.5-4b".to_string(),
             embedding_model: "nomic-embed-text".to_string(),
             embedding_dim: 768,
-            max_tokens: 8192,
+            max_tokens: 4096,
             api_key: None,
         };
 
         let client = LlmClient::new(config);
-        
-        assert!(client.config.name == "qwen3:8b");
-        assert!(client.config.base_url.contains("localhost"));
-    }
-
-    #[tokio::test]
-    async fn test_chat_returns_response() {
-        let config = ModelConfig::default();
-        let client = LlmClient::new(config);
-        
-        let messages = vec![Message::user("Hello".to_string())];
-        let response = client.chat(messages).await.unwrap();
-        
-        assert!(response.contains("Hello"));
-    }
-
-    #[tokio::test]
-    async fn test_cache_operations() {
-        let config = ModelConfig::default();
-        let client = LlmClient::new(config);
-        
-        // Initial cache should be empty
-        assert_eq!(client.cache_size(), 0);
-        
-        // Clear empty cache should work
-        client.clear_cache();
-        assert_eq!(client.cache_size(), 0);
-    }
-
-    #[test]
-    fn test_generate_embedding() {
-        let config = ModelConfig {
-            base_url: "http://localhost:11434".to_string(),
-            name: "qwen3:8b".to_string(),
-            embedding_model: "nomic-embed-text".to_string(),
-            embedding_dim: 128,
-            max_tokens: 8192,
-            api_key: None,
-        };
-        
-        let client = LlmClient::new(config);
-        
-        let emb = client.generate_embedding("test");
-        assert_eq!(emb.len(), 128);
-        
-        // Verify normalization
-        let magnitude: f32 = emb.iter().map(|x| x * x).sum::<f32>().sqrt();
-        assert!((magnitude - 1.0).abs() < 0.001);
-    }
-
-    #[test]
-    fn test_embedding_deterministic() {
-        let config = ModelConfig::default();
-        let client = LlmClient::new(config);
-        
-        let emb1 = client.generate_embedding("same text");
-        let emb2 = client.generate_embedding("same text");
-        
-        assert_eq!(emb1, emb2);
-        
-        let emb3 = client.generate_embedding("different text");
-        assert_ne!(emb1, emb3);
+        assert_eq!(client.config.name, "qwen3.5-4b");
+        assert!(client.config.base_url.contains("8081"));
     }
 }

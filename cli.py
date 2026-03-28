@@ -20,13 +20,13 @@ import requests
 from pathlib import Path
 from datetime import datetime
 
-# Agent API server (handles memory, sessions, training)
+# Agent API server (Rust Agent handles all logic)
 AGENT_URL = "http://localhost:8080"
 
-# Direct llama.cpp for chat
+# llama.cpp (called by Rust Agent, not directly by CLI)
 LLAMA_URL = "http://10.10.199.146:8081"
 
-# Storage for conversations (for training)
+# Storage (handled by Rust Agent - these are just for display)
 CONVERSATIONS_DIR = Path(".agent/conversations")
 TRAINING_DATA_DIR = Path(".agent/training_data")
 
@@ -56,14 +56,26 @@ def print_box(title: str, lines: list[str] = None):
     print(f"{Colors.CYAN}╚{'═' * (width - 2)}╝{Colors.ENDC}\n")
 
 
-def chat(model: str = "qwen3.5-4b", adapter: str = None):
-    """Interactive chat with a model"""
-    print_box("AGI Agent Chat - Interactive Mode", [
-        f"Model: {model}",
-        "Type 'exit' or 'quit' to end the session",
-        "Type 'clear' to clear the conversation",
-        "Type 'save' to save for training"
-    ])
+def chat(model: str = "agent"):
+    """Interactive chat - tries Agent API first, falls back to direct llama.cpp"""
+    
+    # Check if Agent is available
+    agent_available = check_agent_available()
+    
+    if agent_available:
+        print_box("AGI Agent Chat", [
+            "Model: qwen3.5-4b (via Rust Agent)",
+            "Agent: Connected ✓",
+            "Type 'exit' or 'quit' to end the session",
+            "Type 'clear' to clear the conversation"
+        ])
+    else:
+        print_box("AGI Agent Chat", [
+            "Model: qwen3.5-4b (direct llama.cpp)",
+            "Agent: Not running (memory/sessions disabled)",
+            "Type 'exit' or 'quit' to end the session",
+            "Type 'clear' to clear the conversation"
+        ])
     
     messages = [{
         "role": "system",
@@ -71,16 +83,11 @@ def chat(model: str = "qwen3.5-4b", adapter: str = None):
 Format your responses clearly. Use code blocks for code examples."""
     }]
     
-    session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-    total_messages = 0
-    
     while True:
         try:
             user_input = input(f"{Colors.GREEN}👤 You:{Colors.ENDC} ").strip()
         except EOFError:
-            # Save on Ctrl+D
-            save_conversation(messages, session_id, total_messages)
-            print("\n\nGoodbye! (saved)")
+            print("\n\nGoodbye!")
             break
         
         if not user_input:
@@ -88,8 +95,7 @@ Format your responses clearly. Use code blocks for code examples."""
         
         cmd = user_input.lower()
         if cmd in ['exit', 'quit', 'q']:
-            save_conversation(messages, session_id, total_messages)
-            print(f"\n{Colors.CYAN}👋 Goodbye! (conversation saved){Colors.ENDC}\n")
+            print(f"\n{Colors.CYAN}👋 Goodbye!{Colors.ENDC}\n")
             break
         
         if cmd in ['clear', 'c']:
@@ -98,17 +104,10 @@ Format your responses clearly. Use code blocks for code examples."""
                 "content": """You are a helpful AI assistant. Be concise and informative.
 Format your responses clearly. Use code blocks for code examples."""
             }]
-            total_messages = 0
             print(f"{Colors.YELLOW}✓ Conversation cleared{Colors.ENDC}")
             continue
         
-        if cmd in ['save', 's']:
-            save_conversation(messages, session_id, total_messages)
-            print(f"{Colors.GREEN}✓ Conversation saved for training{Colors.ENDC}")
-            continue
-        
         messages.append({"role": "user", "content": user_input})
-        total_messages += 1
         
         print(f"{Colors.BLUE}🤖 Assistant:{Colors.ENDC} ", end="", flush=True)
         
@@ -119,14 +118,13 @@ Format your responses clearly. Use code blocks for code examples."""
                 "stream": True,
             }
             
-            if adapter:
-                payload["adapter"] = adapter
+            # Choose endpoint based on Agent availability
+            url = f"{AGENT_URL}/v1/chat/completions" if agent_available else f"{LLAMA_URL}/v1/chat/completions"
             
-            # Use curl for true streaming
             import subprocess
             curl_cmd = [
                 "curl", "-s", "-N", "-X", "POST",
-                f"{LLAMA_URL}/v1/chat/completions",
+                url,
                 "-H", "Content-Type: application/json",
                 "-d", json.dumps(payload)
             ]
@@ -138,10 +136,7 @@ Format your responses clearly. Use code blocks for code examples."""
             )
             
             full_content = ""
-            while True:
-                line = process.stdout.readline()
-                if not line:
-                    break
+            for line in process.stdout:
                 line_text = line.decode('utf-8', errors='ignore')
                 if line_text.startswith("data: "):
                     data = line_text[6:]
@@ -150,7 +145,6 @@ Format your responses clearly. Use code blocks for code examples."""
                     try:
                         chunk = json.loads(data)
                         delta = chunk.get("choices", [{}])[0].get("delta", {})
-                        # Only show actual content, skip reasoning/thinking
                         content_delta = delta.get("content") or ""
                         if content_delta:
                             print(content_delta, end="", flush=True)
@@ -159,224 +153,74 @@ Format your responses clearly. Use code blocks for code examples."""
                         continue
             
             process.terminate()
-            print()  # newline after streaming done
+            print()
             messages.append({"role": "assistant", "content": full_content})
-            total_messages += 1
             
         except Exception as e:
             print(f"{Colors.RED}\n❌ Error: {e}{Colors.ENDC}")
             if messages and messages[-1]["role"] == "user":
                 messages.pop()
-                total_messages -= 1
 
 
-def save_conversation(messages: list, session_id: str, message_count: int):
-    """Save conversation to .agent/conversations/ and generate training data"""
-    if message_count < 2:
-        return
-    
-    # Create directories
-    CONVERSATIONS_DIR.mkdir(parents=True, exist_ok=True)
-    TRAINING_DATA_DIR.mkdir(parents=True, exist_ok=True)
-    
-    # Save full conversation
-    conv_data = {
-        "id": session_id,
-        "created_at": datetime.now().isoformat(),
-        "message_count": message_count,
-        "messages": messages
-    }
-    
-    conv_file = CONVERSATIONS_DIR / f"conv_{session_id}.json"
-    with open(conv_file, 'w') as f:
-        json.dump(conv_data, f, indent=2)
-    
-    # Generate training examples from user-assistant pairs
-    examples_created = 0
-    for i, msg in enumerate(messages):
-        if msg["role"] == "user" and i + 1 < len(messages) and messages[i + 1]["role"] == "assistant":
-            user_msg = msg["content"]
-            assistant_msg = messages[i + 1]["content"]
-            
-            # Skip very short or very long messages
-            if len(user_msg) < 5 or len(assistant_msg) < 10:
-                continue
-            
-            example = {
-                "id": f"{session_id}_ex_{examples_created}",
-                "prompt": user_msg,
-                "completion": assistant_msg,
-                "source": "conversation",
-                "created_at": datetime.now().isoformat()
-            }
-            
-            example_file = TRAINING_DATA_DIR / f"ex_{session_id}_{examples_created}.json"
-            with open(example_file, 'w') as f:
-                json.dump(example, f)
-            
-            examples_created += 1
-    
-    print(f"  → Saved {conv_file.name} ({message_count} messages, {examples_created} training examples)")
+def check_agent_available():
+    """Check if the Rust Agent API is running"""
+    try:
+        response = requests.get(f"{AGENT_URL}/health", timeout=2)
+        return response.status_code == 200
+    except:
+        return False
+
+
+def check_agent_available():
+    """Check if the Rust Agent API is running"""
+    try:
+        response = requests.get(f"{AGENT_URL}/health", timeout=2)
+        return response.status_code == 200
+    except:
+        return False
+
+
+def get_agent_stats():
+    """Get stats from Agent API"""
+    try:
+        response = requests.get(f"{AGENT_URL}/memories/stats", timeout=5)
+        if response.status_code == 200:
+            return response.json()
+    except:
+        pass
+    return None
 
 
 def train(steps: int = 500, epochs: int = 3):
-    """Trigger RL training using unsloth GRPO"""
+    """Trigger RL training via Agent API"""
     print_box("RL Training Trigger", [
         f"Steps: {steps}",
         f"Epochs: {epochs}",
-        f"Base model: unsloth/Qwen3.5-4B (HuggingFace)"
+        "Rust Agent handles all training logic"
     ])
     
-    # Prepare training data
-    print(f"{Colors.YELLOW}📋 Preparing training data...{Colors.ENDC}")
-    training_data = prepare_training_data()
-    
-    if training_data:
-        print(f"{Colors.GREEN}✓ Found {len(training_data)} training examples{Colors.ENDC}")
-    else:
-        print(f"{Colors.YELLOW}⚠️  No training data found.{Colors.ENDC}")
-        print("   Chat with the model first, then run 'train' to fine-tune.")
-        return
-    
-    # Generate training script with actual data
-    print(f"\n{Colors.CYAN}🔧 Generating training script...{Colors.ENDC}")
-    output_dir = Path.home() / ".agent" / "trained_models" / f"qwen35-4b-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Convert training data to prompts format
-    prompts = [ex["prompt"] for ex in training_data[:100]]  # Limit to 100 examples
-    
-    # Generate custom training script
-    script_content = f'''#!/usr/bin/env python3
-"""
-Auto-generated GRPO Training Script
-Generated: {datetime.now().isoformat()}
-"""
-
-import torch
-from unsloth import FastLanguageModel
-from trl import GRPOConfig, GRPOTrainer
-from datasets import Dataset
-
-CONFIG = {{
-    "output_dir": "{output_dir}",
-    "max_steps": {steps},
-    "learning_rate": 2e-5,
-    "lora_r": 16,
-}}
-
-print(f"=" * 60)
-print("Qwen3.5-4B GRPO Training")
-print(f"Examples: {{len(prompts)}}")
-print(f"Output: {{CONFIG['output_dir']}}")
-print("=" * 60)
-
-# Load model
-model, tokenizer = FastLanguageModel.from_pretrained(
-    model_name="unsloth/Qwen3.5-4B",
-    max_seq_length=2048,
-    load_in_8bit=True,
-    load_in_4bit=False,
-)
-
-# Attach LoRA
-model = FastLanguageModel.get_peft_model(
-    model,
-    r=CONFIG["lora_r"],
-    target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
-)
-
-# Reward function
-def reward_function(completions, **kwargs):
-    rewards = []
-    for c in completions:
-        score = 0.0
-        if len(c) > 10:
-            score += 1.0
-        if c.strip().endswith(('.', '!', '?', ')')):
-            score += 0.5
-        if "\\n" in c:
-            score += 0.5
-        rewards.append(score)
-    return rewards
-
-# Dataset
-def format_prompt(prompt):
-    return f"<|im_start|>user\\n{{prompt}}<|im_end|>\\n<|im_start|>assistant\\n"
-
-prompts = {prompts}
-
-dataset = Dataset.from_dict({{
-    "prompt": [format_prompt(p) for p in prompts],
-    "completion": [""],
-}})
-
-# Train
-trainer = GRPOTrainer(
-    model=model,
-    processing_class=tokenizer,
-    reward_functions=[reward_function],
-    args=GRPOConfig(
-        output_dir=CONFIG["output_dir"],
-        max_steps=CONFIG["max_steps"],
-        learning_rate=CONFIG["learning_rate"],
-        per_device_train_batch_size=2,
-        gradient_accumulation_steps=4,
-        warmup_steps=10,
-        logging_steps=10,
-        save_steps=50,
-    ),
-    train_dataset=dataset,
-)
-
-print("Starting training...")
-trainer.train()
-
-print("Saving model...")
-trainer.save_model(CONFIG["output_dir"])
-tokenizer.save_pretrained(CONFIG["output_dir"])
-print(f"Done! Saved to {{CONFIG['output_dir']}}")
-'''
-    
-    script_path = output_dir / "train.py"
-    with open(script_path, 'w') as f:
-        f.write(script_content)
-    
-    print(f"   Script: {script_path}")
-    print(f"   Output: {output_dir}")
-    
-    # Check if unsloth is available
-    print(f"\n{Colors.GREEN}🚀 Starting training...{Colors.ENDC}")
-    print(f"   Run manually: python3 {script_path}")
-    print()
-    
     try:
-        import subprocess
-        result = subprocess.run(
-            ["python3", str(script_path)],
-            capture_output=False,
-            timeout=3600 * 2  # 2 hour timeout
+        payload = {"steps": steps, "epochs": epochs}
+        response = requests.post(
+            f"{AGENT_URL}/training/trigger",
+            json=payload,
+            timeout=30
         )
         
-        if result.returncode == 0:
-            print(f"\n{Colors.GREEN}✅ Training complete!{Colors.ENDC}")
-            print(f"   Model saved: {output_dir}")
-            
-            # Create merged model for llama.cpp
-            merged_path = output_dir / "merged"
-            print(f"\n{Colors.CYAN}📦 To use with llama.cpp:{Colors.ENDC}")
-            print(f"   1. Export: python3 -m unsloth {output_dir}")
-            print(f"   2. Or merge LoRA:")
-            print(f"      from unsloth import FastLanguageModel")
-            print(f"      model.save_pretrained_merged('{merged_path}', tokenizer, save_method='merged_16bit')")
+        if response.status_code == 200:
+            result = response.json()
+            print(f"{Colors.GREEN}✅ Training started!{Colors.ENDC}")
+            print(f"   Job ID: {result.get('job_id', 'unknown')}")
+            print(f"\n{Colors.CYAN}Check status: ./agi status{Colors.ENDC}")
+        elif response.status_code == 409:
+            print(f"{Colors.YELLOW}⚠️  Training already in progress{Colors.ENDC}")
+            print(f"   Check status: ./agi status")
         else:
-            print(f"\n{Colors.RED}❌ Training failed{Colors.ENDC}")
+            print(f"{Colors.RED}❌ Failed to start training{Colors.ENDC}")
             
-    except KeyboardInterrupt:
-        print(f"\n{Colors.YELLOW}⚠️  Training interrupted{Colors.ENDC}")
-    except Exception as e:
-        print(f"\n{Colors.YELLOW}⚠️  Could not run training: {e}{Colors.ENDC}")
-        print(f"   Run manually: python3 {script_path}")
+    except requests.exceptions.RequestException as e:
+        print(f"{Colors.RED}❌ Could not connect to Agent: {e}{Colors.ENDC}")
+        print(f"   Make sure the Agent is running on {AGENT_URL}")
 
 
 def prepare_training_data() -> list:
@@ -432,32 +276,52 @@ def monitor_training(job_id: str):
 
 
 def status():
-    """Show training status"""
-    print_box("Training Status")
+    """Show agent status via API"""
+    print_box("Agent Status")
     
-    # Count training data
-    training_data = prepare_training_data()
-    conv_count = len(list(CONVERSATIONS_DIR.glob("*.json"))) if CONVERSATIONS_DIR.exists() else 0
-    example_count = len(training_data)
-    
-    print(f"  Conversations: {Colors.GREEN}{conv_count}{Colors.ENDC}")
-    print(f"  Training examples: {Colors.GREEN}{example_count}{Colors.ENDC}")
-    
-    if example_count > 0:
-        print(f"\n  {Colors.CYAN}Run './agi train' to fine-tune the model{Colors.ENDC}")
-    
-    # Check trained models
-    print(f"\n{Colors.BOLD}Trained Models:{Colors.ENDC}")
-    trained_dir = Path.home() / ".agent" / "trained_models"
-    if trained_dir.exists():
-        models = list(trained_dir.iterdir())
-        if models:
-            for m in models:
-                print(f"  ✓ {m.name}")
-        else:
-            print("  No trained models yet")
+    # Get memory stats from Agent
+    stats = get_agent_stats()
+    if stats:
+        total = stats.get("total_memories", 0)
+        retrieval = stats.get("namespaces", {}).get("retrieval", 0)
+        training = stats.get("namespaces", {}).get("training", 0)
+        print(f"  {Colors.BOLD}Memory:{Colors.ENDC}")
+        print(f"    Total memories: {Colors.GREEN}{total}{Colors.ENDC}")
+        print(f"    Retrieval: {retrieval}")
+        print(f"    Training: {training}")
     else:
-        print("  No trained models yet")
+        print(f"  {Colors.YELLOW}⚠️  Could not connect to Agent{Colors.ENDC}")
+        print(f"    Make sure the Agent is running on {AGENT_URL}")
+    
+    # Get training status from Agent
+    print(f"\n  {Colors.BOLD}Training:{Colors.ENDC}")
+    try:
+        response = requests.get(f"{AGENT_URL}/training/status", timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            print(f"    Status: {data.get('status', 'unknown')}")
+            print(f"    Total jobs: {data.get('total_jobs', 0)}")
+        else:
+            print(f"    No training data yet")
+    except:
+        print(f"    Could not get training status")
+    
+    # Get trained models
+    print(f"\n  {Colors.BOLD}Trained Models:{Colors.ENDC}")
+    try:
+        response = requests.get(f"{AGENT_URL}/training/models", timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            models = data.get("models", [])
+            if models:
+                for m in models:
+                    print(f"    ✓ {m.get('name', 'unknown')}")
+            else:
+                print("    No trained models yet")
+        else:
+            print("    No trained models yet")
+    except:
+        print("    Could not get models")
     
     print()
 

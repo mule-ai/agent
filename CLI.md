@@ -1,156 +1,104 @@
 # AGI Agent CLI
 
-Interactive CLI for chatting with qwen3.5-4b and triggering RL training.
-
-## Prerequisites
-
-- **llama.cpp server** must be running on `10.10.199.146:8081`
-- Model: **Qwen3.5-4B-GGUF:Q8_0** (~4.5 GB)
-- **unsloth** for RL training (installed in `/home/administrator/.venv`)
-
-```bash
-# Check if server is running
-sudo systemctl status llama-qwen
-
-# If not, start it
-sudo systemctl start llama-qwen
-```
-
-## Usage
-
-### Chat with the base model
-
-```bash
-python3 cli.py chat
-# or
-./agi chat
-```
-
-### Chat commands (during chat)
-
-- `exit` / `quit` / `q` - End session and save for training
-- `clear` / `c` - Clear conversation
-- `save` / `s` - Save conversation for training
-
-### Trigger RL training
-
-```bash
-# Default: 500 steps
-python3 cli.py train
-./agi train
-
-# Custom settings
-python3 cli.py train --steps 1000
-./agi train --steps 1000
-```
-
-### Check training status
-
-```bash
-python3 cli.py status
-./agi status
-```
-
-### List available models
-
-```bash
-python3 cli.py models
-./agi models
-```
-
-## Workflow
-
-### 1. Chat and Collect Data
-
-```bash
-./agi chat
-# Chat with the model...
-# Type 'exit' to save conversation
-```
-
-Conversations are automatically saved to:
-- `.agent/conversations/` - Full conversation logs
-- `.agent/training_data/` - Individual training examples
-
-### 2. Trigger RL Training
-
-```bash
-./agi train
-```
-
-This uses **unsloth GRPO** (Group Relative Policy Optimization) to fine-tune the model with your collected conversations.
-
-### 3. Chat with Trained Model
-
-After training completes, the LoRA adapter is saved to:
-```
-~/.agent/trained_models/qwen35-4b-YYYYMMDD-HHMMSS/
-```
-
-To use with llama.cpp, you'll need to merge the LoRA adapter with the base model.
+Simple Python CLI that calls the Rust Agent API. The Agent handles all logic (LLM calls, memory, sessions, training).
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                     CLI (cli.py)                            │
-│    - Interactive chat with streaming                       │
-│    - Saves conversations for training                      │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│              llama.cpp server (port 8081)                   │
-│    - Qwen3.5-4B-Q8_0 inference                           │
-│    - Streaming responses                                   │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼ (on exit)
-┌─────────────────────────────────────────────────────────────┐
-│              Training Data Storage                          │
-│    .agent/conversations/  - Full logs                     │
-│    .agent/training_data/  - User→Assistant pairs          │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼ (on train)
-┌─────────────────────────────────────────────────────────────┐
-│              unsloth GRPO Training                         │
-│    - Uses HuggingFace model (unsloth/Qwen3.5-4B)         │
-│    - Outputs LoRA adapter                                  │
-└─────────────────────────────────────────────────────────────┘
+CLI (Python) → Agent API (Rust, port 8080) → llama.cpp (port 8081)
+                        ↓
+                  Memory/Sessions
+                        ↓
+                  Training Pipeline
+```
+
+## Quick Start
+
+```bash
+# Make sure llama.cpp is running
+sudo systemctl status llama-qwen
+
+# Chat (CLI auto-detects Agent availability)
+./agi chat
+
+# If Agent isn't running, CLI falls back to direct llama.cpp
+```
+
+## Commands
+
+```bash
+./agi chat              # Interactive chat
+./agi status            # Check Agent status
+./agi train            # Trigger RL training (via Agent)
+./agi models           # List available models
+```
+
+## How It Works
+
+### When Agent is Running
+
+```
+CLI → Agent API → llama.cpp
+            ↓
+      Memory (SQLite/Tantivy)
+            ↓
+      Sessions
+            ↓
+      Training Pipeline
+```
+
+### When Agent is NOT Running
+
+```
+CLI → llama.cpp (direct)
+            ↓
+   No memory/sessions (just chat works)
+```
+
+The CLI detects Agent availability automatically and shows:
+- **Agent: Connected ✓** - Full functionality
+- **Agent: Not running** - Chat works, memory disabled
+
+## Prerequisites
+
+### llama.cpp server
+```bash
+sudo systemctl status llama-qwen
+sudo systemctl start llama-qwen
+```
+
+### Agent (optional - enables memory/sessions)
+```bash
+# Agent binary needs to be built and run
+# When running, it connects to llama.cpp
+cargo run --release
 ```
 
 ## Configuration
 
-Edit `agent.toml` to configure:
-- Model API endpoint
-- Memory storage path
-- Training parameters
+Default endpoints in `cli.py`:
+```python
+AGENT_URL = "http://localhost:8080"  # Rust Agent
+LLAMA_URL = "http://10.10.199.146:8081"  # llama.cpp
+```
 
 ## Services
 
-| Service | Port | Model |
-|---------|------|-------|
+| Service | Port | Status |
+|---------|------|--------|
 | llama-qwen | 8081 | Qwen3.5-4B-Q8_0 |
-| llama (GLM) | 8080 | GLM-4.7-Flash |
+| agent | 8080 | Optional (enables memory) |
 
 ## Troubleshooting
 
-### Connection refused error
-Make sure llama.cpp server is running:
+### "Agent: Not running"
+This is fine - chat still works. To enable memory/sessions, start the Rust Agent.
+
+### Connection refused
 ```bash
+# Check llama.cpp
 sudo systemctl status llama-qwen
-```
 
-### Model not loaded
-Check model download:
-```bash
-ls -lh /home/administrator/.cache/llama.cpp/
-```
-
-### Training fails
-Ensure unsloth is installed:
-```bash
-source /home/administrator/.venv/bin/activate
-pip install unsloth trl
+# Or check Agent
+curl http://localhost:8080/health
 ```
