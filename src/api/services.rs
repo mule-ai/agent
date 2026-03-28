@@ -183,12 +183,28 @@ pub async fn run_eviction(
     let moved = results.iter().filter(|r| r.action == "moved_to_training").count();
     let deleted = results.iter().filter(|r| r.action == "deleted").count();
     
-    // Apply deletions
+    // Apply actions
     for result in &results {
-        if result.action == "deleted" {
-            if let Err(e) = state.memory_store.delete(&result.memory_id) {
-                tracing::warn!("Failed to delete memory {}: {}", result.memory_id, e);
+        match result.action.as_str() {
+            "deleted" => {
+                if let Err(e) = state.memory_store.delete(&result.memory_id) {
+                    tracing::warn!("Failed to delete memory {}: {}", result.memory_id, e);
+                }
             }
+            "moved_to_training" => {
+                // Move memory to training namespace
+                if let Ok(Some(mut memory)) = state.memory_store.get(&result.memory_id) {
+                    memory.namespace = "training".to_string();
+                    memory.tags.push("evicted_from_retrieval".to_string());
+                    memory.updated_at = chrono::Utc::now();
+                    if let Err(e) = state.memory_store.update(&memory) {
+                        tracing::warn!("Failed to move memory {} to training: {}", result.memory_id, e);
+                    } else {
+                        tracing::info!("Moved memory {} to training namespace", result.memory_id);
+                    }
+                }
+            }
+            _ => {} // Keep - no action needed
         }
     }
     

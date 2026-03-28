@@ -214,11 +214,12 @@ impl MemoryEvictionService {
                 }
             }
             MemoryType::Fact => {
-                // Facts can be deleted unless persistent
-                if self.config.eviction_policy.keep_facts && !memory.is_persistent {
-                    EvictionDecision::Delete
+                // Facts (user preferences, knowledge) should be moved to training for RL
+                if self.config.eviction_policy.keep_facts {
+                    // Keep facts available for retrieval AND training
+                    EvictionDecision::MoveToTraining
                 } else {
-                    EvictionDecision::Keep
+                    EvictionDecision::Delete
                 }
             }
             MemoryType::Conversation => {
