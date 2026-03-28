@@ -96,9 +96,14 @@ impl Agent {
             }
         }
 
-        // Build context with system prompt
-        let mut context = vec![crate::models::Message::system(self.agent_config.system_prompt.clone())];
-        context.extend(messages);
+        // Build context - only add system prompt if not already present
+        let context = if messages.first().map(|m| m.role == crate::models::Role::System).unwrap_or(false) {
+            messages.clone()
+        } else {
+            let mut context = vec![crate::models::Message::system(self.agent_config.system_prompt.clone())];
+            context.extend(messages);
+            context
+        };
 
         // Optional reasoning
         let reasoning = if self.agent_config.enable_reasoning {

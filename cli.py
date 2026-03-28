@@ -115,46 +115,27 @@ Format your responses clearly. Use code blocks for code examples."""
             payload = {
                 "model": model,
                 "messages": messages,
-                "stream": True,
+                "stream": False,
             }
             
             # Choose endpoint based on Agent availability
             url = f"{AGENT_URL}/v1/chat/completions" if agent_available else f"{LLAMA_URL}/v1/chat/completions"
             
+            # Use curl subprocess
             import subprocess
             curl_cmd = [
-                "curl", "-s", "-N", "-X", "POST",
+                "curl", "-s", "-X", "POST",
                 url,
                 "-H", "Content-Type: application/json",
                 "-d", json.dumps(payload)
             ]
             
-            process = subprocess.Popen(
-                curl_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL
-            )
+            result = subprocess.run(curl_cmd, capture_output=True, text=True, timeout=120)
+            response_json = json.loads(result.stdout)
             
-            full_content = ""
-            for line in process.stdout:
-                line_text = line.decode('utf-8', errors='ignore')
-                if line_text.startswith("data: "):
-                    data = line_text[6:]
-                    if data.strip() == "[DONE]":
-                        break
-                    try:
-                        chunk = json.loads(data)
-                        delta = chunk.get("choices", [{}])[0].get("delta", {})
-                        content_delta = delta.get("content") or ""
-                        if content_delta:
-                            print(content_delta, end="", flush=True)
-                            full_content += content_delta
-                    except json.JSONDecodeError:
-                        continue
-            
-            process.terminate()
-            print()
-            messages.append({"role": "assistant", "content": full_content})
+            content = response_json.get("choices", [{}])[0].get("message", {}).get("content", "")
+            print(content)
+            messages.append({"role": "assistant", "content": content})
             
         except Exception as e:
             print(f"{Colors.RED}\n❌ Error: {e}{Colors.ENDC}")

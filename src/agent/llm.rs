@@ -59,8 +59,9 @@ impl LlmClient {
             .context("Failed to send request to LLM")?;
 
         if !response.status().is_success() {
+            let status = response.status();
             let error = response.text().await.unwrap_or_default();
-            anyhow::bail!("LLM API error: {} - {}", response.status(), error);
+            anyhow::bail!("LLM API error: {} - {}", status, error);
         }
 
         let chat_response: ChatResponse = response

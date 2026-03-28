@@ -23,20 +23,9 @@ embedding_dim = 768
 max_tokens = 4096
 temperature = 0.7
 
-# Embedding model
-embedding_model = "nomic-embed-text"
-embedding_dim = 768
-
-# Optional API key for OpenAI-compatible APIs
-# api_key = "sk-..."
-
-# Generation settings
-max_tokens = 4096
-temperature = 0.7
-
 [memory]
-# Path to memory storage
-storage_path = ".agent/memory"
+# Path to memory storage (use /tmp for SQLite on SMB mounts)
+storage_path = "/tmp/agent-memory"
 
 # Default TTL for retrieval memories (hours)
 retrieval_ttl_hours = 24
@@ -70,39 +59,27 @@ model = "qwen3.5-4b"
 output_path = ".agent/models"
 
 # Training settings
-epochs = 3                  # Number of passes through the dataset
-batch_size = 4              # Samples per batch
-gradient_accumulation_steps = 1  # Effective batch = batch_size * accumulation
-learning_rate = 1e-4        # Higher LR for fine-tuning
-lora_rank = 16              # LoRA adapter rank
-warmup_steps = 10           # Learning rate warmup
-lr_scheduler = "cosine"    # Learning rate schedule
+epochs = 3
+batch_size = 4
+gradient_accumulation_steps = 1
+learning_rate = 1e-4
+lora_rank = 16
+warmup_steps = 10
+lr_scheduler = "cosine"
 
 # Early stopping
-early_stopping_patience = 3  # Stop if no improvement for N epochs
-min_loss_improvement = 0.01  # Minimum loss improvement to count as progress
+early_stopping_patience = 3
+min_loss_improvement = 0.01
 
 [summarization]
-# AI summarization provider
 provider = "openai"
-
-# API key (or set via SEARCH_SUMMARIZE_API_KEY env var)
 # api_key = "sk-..."
-
-# Model
 model = "gpt-4o-mini"
-
-# Timeout
 timeout = 60
 
 [tools]
-# Enable/disable tools
 search_enabled = true
 bash_enabled = true
 file_tools_enabled = true
-
-# Bash restrictions (empty = allow all)
 # allowed_commands = ["git", "ls", "cat", "grep"]
-
-# Working directory for bash commands
 # bash_working_dir = "/tmp"
