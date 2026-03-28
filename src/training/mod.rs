@@ -1,5 +1,5 @@
 //! Training pipeline for AGI Agent
-//! 
+//!
 //! Implements GRPO training with the following components:
 //! - Training data accumulation from memory
 //! - GRPO reward functions
@@ -9,7 +9,7 @@
 use crate::config::TrainingConfig;
 use crate::models::{TrainingExample, TrainingJob};
 use anyhow::Result;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -33,7 +33,7 @@ pub mod grpo {
     /// Reward for helpful responses
     pub fn helpfulness_reward(completion: &str) -> f32 {
         let mut score = 0.0;
-        
+
         // Length-based (reasonable response length)
         let len = completion.len();
         if len > 50 && len < 2000 {
@@ -41,17 +41,17 @@ pub mod grpo {
         } else if len >= 2000 {
             score += 0.3;
         }
-        
+
         // Has structured content
         if completion.contains('\n') {
             score += 0.25;
         }
-        
+
         // Not empty
         if !completion.trim().is_empty() {
             score += 0.25;
         }
-        
+
         score
     }
 
@@ -157,21 +157,21 @@ impl ModelRegistry {
     /// List all trained models
     pub async fn list_models(&self) -> Vec<ModelInfo> {
         let mut models = Vec::new();
-        
+
         if let Ok(entries) = std::fs::read_dir(&self.models_dir) {
             for entry in entries.flatten() {
                 if let Ok(metadata) = entry.metadata() {
                     if metadata.is_dir() {
                         let model_id = entry.file_name().to_string_lossy().to_string();
                         let config_path = entry.path().join("config.json");
-                        
+
                         let created_at = metadata
                             .created()
                             .ok()
                             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                             .map(|d| chrono::DateTime::from_timestamp(d.as_secs() as i64, 0))
                             .flatten();
-                        
+
                         let metrics = if config_path.exists() {
                             std::fs::read_to_string(&config_path)
                                 .ok()
@@ -180,7 +180,7 @@ impl ModelRegistry {
                         } else {
                             None
                         };
-                        
+
                         models.push(ModelInfo {
                             model_id,
                             path: entry.path(),
@@ -191,26 +191,30 @@ impl ModelRegistry {
                 }
             }
         }
-        
+
         models.sort_by(|a, b| b.created_at.cmp(&a.created_at));
         models
     }
 
     /// Save a new model version
-    pub async fn save_model(&self, model_id: String, metrics: serde_json::Value) -> Result<PathBuf> {
-        let model_dir = self.models_dir.join(&model_id);
-        std::fs::create_dir_all(&model_dir)?;
+    pub async fn save_model(&self, model_id: String, metrics: serde_json::Value, output_dir: &Path) -> Result<PathBuf> {
+        // The Python script saves directly to output_dir
+        // We just need to add the config.json to record the model info
+        let model_dir = output_dir.to_path_buf();
         
+        // Ensure directory exists
+        std::fs::create_dir_all(&model_dir)?;
+
         let config = serde_json::json!({
             "model_id": model_id,
             "metrics": metrics,
         });
-        
+
         std::fs::write(
             model_dir.join("config.json"),
             serde_json::to_string_pretty(&config)?,
         )?;
-        
+
         Ok(model_dir)
     }
 }
@@ -277,147 +281,111 @@ impl TrainingPipeline {
     pub async fn train(&self) -> Result<TrainingJob> {
         let mut job = TrainingJob::new(self.config.epochs, self.config.batch_size * 100);
         job.start();
-        
+
         // Store job
         {
             let mut current = self.current_job.write().await;
             *current = Some(job.clone());
         }
-        
+
         // Run training in background
         let config = self.config.clone();
         let registry = self.model_registry.clone();
         let accumulator = self.data_accumulator.read().await;
-        
+
         let examples_jsonl = accumulator.export_jsonl();
         drop(accumulator);
-        
-        // Write training data
-        let training_data_path = std::env::temp_dir().join("training_data.jsonl");
+
+        // Write training data to home directory (tmp might not exist in container)
+        let home_dir = std::env::var("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("/home/administrator"));
+        let training_dir = home_dir.join(".agi/training");
+        std::fs::create_dir_all(&training_dir)?;
+        let training_data_path = training_dir.join("training_data.jsonl");
         std::fs::write(&training_data_path, &examples_jsonl)?;
-        
-        // Run Python training script
-        let result = tokio::process::Command::new("python3")
-            .arg("-c")
-            .arg(Self::generate_training_script(&config, training_data_path))
-            .output()
-            .await;
-        
+
+        // Run Python training script using the venv python if available
+        let python_cmd = if PathBuf::from("/home/administrator/.agi-venv/bin/python").exists() {
+            "/home/administrator/.agi-venv/bin/python"
+        } else {
+            "python3"
+        };
+
+        // Run the training script
+        let output_path = config.output_path.clone();
+        let result = Self::run_training_script(python_cmd, &training_data_path, &output_path);
+
         let mut job = self.current_job.write().await;
         if let Some(ref mut j) = *job {
             match result {
-                Ok(output) if output.status.success() => {
+                Ok(metrics) => {
                     j.complete();
-                    
-                    // Save model
-                    let model_id = format!("{}-v{}", self.config.model, chrono::Utc::now().format("%Y%m%d%H%M%S"));
-                    let metrics: serde_json::Value = serde_json::from_slice(&output.stdout)
-                        .unwrap_or(serde_json::json!({
-                            "status": "completed",
-                        }));
-                    
-                    registry.save_model(model_id, metrics).await?;
-                }
-                Ok(output) => {
-                    let error = String::from_utf8_lossy(&output.stderr).to_string();
-                    j.fail(format!("Training failed: {}", error));
+
+                    // Save model - use a model_id based on the output directory name
+                    let model_id = output_path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("model")
+                        .to_string();
+                    registry.save_model(model_id, metrics, &output_path).await?;
                 }
                 Err(e) => {
-                    j.fail(format!("Failed to run training: {}", e));
+                    j.fail(format!("Training failed: {}", e));
                 }
             }
         }
-        
+
         Ok(job.clone().unwrap_or_else(default_job))
     }
 
-    /// Generate Python training script
-    fn generate_training_script(config: &TrainingConfig, data_path: PathBuf) -> String {
-        let output_path = config.output_path.display().to_string();
-        format!(r#"
-import json
-import os
-
-# Use unsloth for efficient fine-tuning if available, otherwise standard transformers
-try:
-    from unsloth import FastLanguageModel
-    import torch
-    
-    # Load model
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name="{}",
-        max_seq_length=2048,
-        dtype=None,
-        load_in_4bit=True,
-    )
-    
-    # Add LoRA adapters
-    model = FastLanguageModel.get_peft_model(
-        model,
-        r=16,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
-        lora_alpha=16,
-        lora_dropout=0,
-        bias="none",
-        use_gradient_checkpointing=True,
-    )
-    
-    # Load training data
-    with open("{}", "r") as f:
-        data = [json.loads(line) for line in f]
-    
-    # Format for training
-    from datasets import Dataset
-    dataset = Dataset.from_list(data)
-    
-    # Train
-    from trl import SFTTrainer
-    from transformers import TrainingArguments
-    
-    trainer = SFTTrainer(
-        model=model,
-        tokenizer=tokenizer,
-        train_dataset=dataset,
-        dataset_text_field="prompt",
-        max_seq_length=2048,
-        dataset_num_proc=4,
-        packing=True,
-        args=TrainingArguments(
-            per_device_train_batch_size=4,
-            gradient_accumulation_steps={},
-            warmup_steps={},
-            num_train_epochs={},
-            learning_rate={},
-            fp16=not torch.cuda.is_bf16_supported(),
-            logging_steps=1,
-            optim="adamw_8bit",
-            weight_decay=0.01,
-            lr_scheduler_type="{}",
-            seed=3407,
-            output_dir="{}",
-        ),
-    )
-    
-    trainer.train()
-    
-    # Save
-    model.save_pretrained("{}")
-    
-    print(json.dumps({{"status": "success", "samples": len(data)}}))
-    
-except ImportError:
-    print(json.dumps({{"status": "skipped", "reason": "unsloth not installed"}}))
-"#, 
-            config.model,
-            data_path.display(),
-            config.gradient_accumulation_steps,
-            config.warmup_steps,
-            config.epochs,
-            config.learning_rate,
-            config.lr_scheduler,
-            output_path,
-            output_path,
-        )
+    /// Run the external training script
+    fn run_training_script(python_cmd: &str, data_path: &Path, output_path: &Path) -> Result<serde_json::Value, String> {
+        // Get the directory of the current binary or project
+        let script_path = std::env::current_exe()
+            .map(|p| p.parent().unwrap_or(&p).join("training_script.py"))
+            .unwrap_or_else(|_| PathBuf::from("training_script.py"));
+        
+        // Fallback to project directory if script doesn't exist next to binary
+        let script_path = if script_path.exists() {
+            script_path
+        } else {
+            PathBuf::from("/data/jbutler/mule/agent/training_script.py")
+        };
+        
+        let data_path_str = data_path.display().to_string();
+        let output_path_str = output_path.display().to_string();
+        
+        tracing::info!("Running training script: {} {} {} {}", python_cmd, script_path.display(), data_path_str, output_path_str);
+        
+        let output = std::process::Command::new(python_cmd)
+            .arg(&script_path)
+            .arg(&data_path_str)
+            .arg(&output_path_str)
+            .output()
+            .map_err(|e| format!("Failed to run training script: {}", e))?;
+        
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        
+        tracing::info!("Training script stdout: {}", stdout);
+        if !stderr.is_empty() {
+            tracing::info!("Training script stderr: {}", stderr);
+        }
+        
+        if output.status.success() {
+            // Look for the last line that is valid JSON
+            let mut result = serde_json::json!({"status": "completed"});
+            for line in stdout.lines().rev() {
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(line) {
+                    result = parsed;
+                    break;
+                }
+            }
+            Ok(result)
+        } else {
+            Err(format!("Training failed with status {:?}: stdout={} stderr={}", output.status, stdout, stderr))
+        }
     }
 }
 
@@ -455,13 +423,13 @@ mod tests {
     #[tokio::test]
     async fn test_training_accumulator() {
         let mut accumulator = TrainingDataAccumulator::new(3);
-        
+
         accumulator.add(TrainingExample::new("p1".to_string(), "c1".to_string()));
         accumulator.add(TrainingExample::new("p2".to_string(), "c2".to_string()));
         accumulator.add(TrainingExample::new("p3".to_string(), "c3".to_string()));
-        
+
         assert_eq!(accumulator.examples().len(), 3);
-        
+
         // Adding another should trigger replacement logic
         accumulator.add(TrainingExample::new("p4".to_string(), "c4".to_string()));
         assert!(accumulator.examples().len() <= 3);
@@ -471,7 +439,7 @@ mod tests {
     fn test_export_jsonl() {
         let mut accumulator = TrainingDataAccumulator::new(10);
         accumulator.add(TrainingExample::new("prompt".to_string(), "completion".to_string()));
-        
+
         let jsonl = accumulator.export_jsonl();
         assert!(jsonl.contains("prompt"));
         assert!(jsonl.contains("completion"));
