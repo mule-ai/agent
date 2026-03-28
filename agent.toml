@@ -28,7 +28,7 @@ temperature = 0.7
 storage_path = "/home/administrator/.agi/memory"
 
 # Default TTL for retrieval memories (hours)
-retrieval_ttl_hours = 24
+retrieval_ttl_hours = 0
 
 # Default namespace
 default_namespace = "retrieval"

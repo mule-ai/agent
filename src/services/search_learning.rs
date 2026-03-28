@@ -131,7 +131,16 @@ pub struct SearchLearningService {
 
 impl SearchLearningService {
     pub fn new() -> Self {
-        Self::with_config(SearchLearningConfig::default())
+        // Try to read from config file, fall back to default
+        let config = crate::config::AppConfig::load()
+            .map(|c| SearchLearningConfig {
+                enabled: true,
+                searx_url: c.search.instance.clone(),
+                timeout_seconds: c.search.timeout as u64,
+                ..Default::default()
+            })
+            .unwrap_or_default();
+        Self::with_config(config)
     }
 
     pub fn with_config(config: SearchLearningConfig) -> Self {
@@ -504,19 +513,18 @@ fn strip_html(html: &str) -> String {
     let mut in_tag = false;
     let mut in_script = false;
     let mut in_style = false;
+    let mut bytes_idx = 0;
 
-    let chars: Vec<char> = html.chars().collect();
-    let len = chars.len();
-    let mut i = 0;
+    let bytes = html.as_bytes();
+    let len = bytes.len();
 
-    while i < len {
-        let c = chars[i];
-        
-        if c == '<' {
+    while bytes_idx < len {
+        // Check for tag start
+        if bytes_idx + 1 < len && bytes[bytes_idx] == b'<' {
             in_tag = true;
             
             // Check for script/style tags
-            let remaining = &html[i..];
+            let remaining = &html[bytes_idx..];
             let lower = remaining.to_lowercase();
             
             if lower.starts_with("<script") {
@@ -528,16 +536,26 @@ fn strip_html(html: &str) -> String {
             } else if lower.starts_with("</style") {
                 in_style = false;
             }
-        } else if c == '>' {
-            in_tag = false;
+        }
+        // Check for tag end
+        else if bytes_idx + 1 < len && bytes[bytes_idx] == b'>' {
             if !in_script && !in_style {
                 result.push(' ');
             }
-        } else if !in_tag && !in_script && !in_style {
-            result.push(c);
+            in_tag = false;
+        }
+        // Outside tags and not in script/style
+        else if !in_tag && !in_script && !in_style {
+            // Handle UTF-8 characters properly - find char boundaries
+            let c = char::from_u32(bytes[bytes_idx] as u32);
+            if let Some(ch) = c {
+                result.push(ch);
+                bytes_idx += ch.len_utf8();
+                continue;
+            }
         }
         
-        i += 1;
+        bytes_idx += 1;
     }
 
     // Clean up whitespace

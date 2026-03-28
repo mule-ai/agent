@@ -33,7 +33,15 @@ pub struct SearchTool {
 
 impl SearchTool {
     pub fn new() -> Self {
-        Self::with_config(SearchToolConfig::default())
+        // Try to read from config file, fall back to default
+        let config = crate::config::AppConfig::load()
+            .map(|c| SearchToolConfig {
+                searx_url: c.search.instance.clone(),
+                timeout_seconds: c.search.timeout as u64,
+                max_results: 10,
+            })
+            .unwrap_or_default();
+        Self::with_config(config)
     }
 
     pub fn with_config(config: SearchToolConfig) -> Self {
