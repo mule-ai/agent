@@ -9,9 +9,9 @@ This document explains how the AGI Agent system is designed and how all componen
 ### 1. Rust-Native Implementation
 - No WebAssembly, pure Rust
 - Uses `axum` for HTTP/WebSocket server
-- Uses `tantivy` for vector search
-- Uses `rusqlite` for storage
-- Uses `candle` for ML operations
+- Uses `rusqlite` for storage (SQLite text search for RAG)
+- Uses `reqwest` for HTTP client
+- Optional: Qwen3-Embedding via llama.cpp for vector search
 
 ### 2. OpenAI-Compatible API
 - Drop-in replacement for existing applications

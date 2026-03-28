@@ -202,7 +202,7 @@ The memory system uses a three-tier approach:
 
 ### Memory Store
 
-Located in `src/memory/store.rs`, implements `MemoryStore` trait:
+Located in `src/memory/store.rs`, implements `MemoryStore` trait with SQLite backend:
 
 ```rust
 pub trait MemoryStore: Send + Sync {
@@ -213,65 +213,74 @@ pub trait MemoryStore: Send + Sync {
     fn delete(&self, id: &str) -> Result<()>;
     fn list(&self, namespace: &str, limit: usize) -> Result<Vec<Memory>>;
     fn get_expired(&self, namespace: &str, ttl_hours: u64) -> Result<Vec<Memory>>;
+    fn search_by_text(&self, namespace: &str, search_text: &str, limit: usize) -> Result<Vec<QueryResult>>;
+    fn search_by_text_fast(&self, namespace: &str, search_text: &str, limit: usize) -> Result<Vec<Memory>>;
 }
 ```
 
 ### Embedding Client
 
-Generates vector embeddings for memories using Ollama:
+Generates vector embeddings using Qwen3-Embedding server (llama.cpp):
 
 ```rust
 use agi_agent::memory::embedding::EmbeddingClient;
 
 let client = EmbeddingClient::new(EmbeddingClientConfig {
-    base_url: "http://localhost:11434".to_string(),
-    model: "nomic-embed-text".to_string(),
+    base_url: "http://127.0.0.1:8083".to_string(),  // llama-embedding service
+    model: "qwen3-embedding".to_string(),
     dimensions: 768,
     batch_size: 32,
 });
 
 // Single embedding
 let embedding = client.embed("Rust is a systems language").await?;
-
-// Batch embeddings
-let embeddings = client.embed_batch(texts).await?;
 ```
 
-The client falls back to hash-based embeddings if Ollama is unavailable.
+**Available embedding services:**
+- `llama-embedding` (port 8083): Qwen3-Embedding-0.6B-Q8_0
+- `llama-rerank` (port 8084): Qwen3-Reranker-0.6B-Q8_0
 
-### Memory Retriever
+### RAG (Retrieval-Augmented Generation)
 
-Retrieves relevant memories for a query:
+RAG uses fast SQLite text search for retrieval:
 
 ```rust
-use agi_agent::memory::retrieval::MemoryRetriever;
+// Extract key terms from query
+let stop_words = ["what", "who", "where", "when", "why", "how", "is", "are", ...];
+let search_term = query.split_whitespace()
+    .filter(|w| w.len() > 2)
+    .filter(|w| !stop_words.contains(&w.to_lowercase()))
+    .next()
+    .unwrap_or_default();
 
-let retriever = MemoryRetriever::new(store, client, RetrievalConfig {
-    max_memories: 10,
-    min_similarity: 0.6,
-});
+// Fast text search in both namespaces
+let memories = memory_store.search_by_text_fast("training", search_term, 5)?;
 
-// Query memories
-let results = retriever.retrieve("Rust programming").await?;
-
-// Build context string
-let context = retriever.build_context("Rust programming").await?;
+// Inject into context
+let memory_context = format!("Relevant context:\n{}",
+    memories.iter().map(|m| m.content.clone()).collect::<Vec<_>>().join("\n"));
 ```
+
+**Benefits:**
+- Fast (< 100ms per query)
+- No embedding generation at query time
+- Filters stop words for better matching
+- Searches both retrieval and training namespaces
 
 ### Memory Types
 
 ```rust
 pub enum MemoryType {
-    Fact,           // Specific facts (evict after TTL)
-    Concept,        // Conceptual knowledge (move to training)
-    Conversation,   // Conversation transcripts
-    ToolResult,     // Results from tool execution
+    Fact,           // Specific facts → move to training on eviction
+    Concept,        // Conceptual knowledge → already in training
+    Conversation,   // Conversation transcripts → delete on eviction
+    ToolResult,     // Results from tool execution → delete on eviction
 }
 ```
 
 ### Eviction Policy
 
-Determines what happens to memories when TTL expires:
+Determines what happens to memories when TTL expires. **Facts are kept, not deleted:**
 
 ```rust
 use agi_agent::memory::eviction::{MemoryEvictionPolicy, EvictionDecision};
@@ -283,13 +292,15 @@ let policy = MemoryEvictionPolicy::new(store, EvictionPolicyConfig {
     auto_evict_to_training: true,
 });
 
-// Evaluate a memory
+// Evaluate a memory on TTL expiration
 match policy.evaluate(&memory) {
-    EvictionDecision::Keep => { /* stay in retrieval */ }
-    EvictionDecision::EvictToTraining => { /* move to training */ }
-    EvictionDecision::Delete => { /* remove entirely */ }
+    EvictionDecision::Keep => { /* stays in retrieval */ }
+    EvictionDecision::EvictToTraining => { /* move to training (KEEP the knowledge!) */ }
+    EvictionDecision::Delete => { /* remove entirely (only for conversations) */ }
 }
 ```
+
+**Key principle:** Facts and concepts are moved to training namespace (preserved), not deleted. Only ephemeral data (conversations, tool results) is deleted.
 
 ---
 
@@ -1128,9 +1139,10 @@ port = 8080
 workers = 4
 
 [model]
-base_url = "http://10.10.199.146:8081"
+base_url = "http://10.10.199.146:8081"     # llama.cpp server
 name = "qwen3.5-4b"
-embedding_model = "nomic-embed-text"
+embedding_model = "qwen3-embedding"         # Qwen3 embedding model name
+embedding_base_url = "http://127.0.0.1:8083" # Embedding server
 embedding_dim = 768
 max_tokens = 4096
 temperature = 0.7
@@ -1144,7 +1156,7 @@ query_limit = 10
 
 [training]
 enabled = true
-schedule = "0 2 * * *"
+schedule = "0 2 * * *"  # 2 AM daily
 model = "qwen3.5-4b"
 output_path = ".agent/models"
 epochs = 3
@@ -1160,13 +1172,8 @@ memory_eviction_enabled = true
 memory_eviction_schedule = "0 0 * * *"  # Midnight daily
 
 [search]
-instance = "https://search.butler.ooo"
+instance = "https://search.butler.ooo"  # SearXNG
 timeout = 30
-
-[summarization]
-provider = "openai"
-api_key = ""
-model = "gpt-4o-mini"
 
 [online_learning]
 batch_size = 16
@@ -1333,11 +1340,19 @@ impl MyKnowledgeSource {
 - **CUDA Acceleration**: GPU acceleration for inference
 - **OpenAI Compatibility**: Drop-in API compatibility
 - **Local Deployment**: No cloud dependency
+- **Embedding Server**: Built-in support for Qwen3-Embedding models
+
+### Why SQLite + Text Search for RAG?
+
+- **Speed**: SQLite LIKE queries are fast (< 10ms)
+- **Simplicity**: No embedding generation at query time
+- **Reliability**: ACID transactions, proven technology
+- **Compatibility**: Works with any memory content
 
 ### Why Three Memory Namespaces?
 
-- **Retrieval**: Fast access for conversation context
-- **Training**: Accumulated knowledge for RL
+- **Retrieval**: Short-term context, expires after TTL
+- **Training**: Long-term knowledge, never deleted
 - **Team**: Shared knowledge for multi-agent
 
 Separation allows:
@@ -1369,24 +1384,24 @@ Separation allows:
 
 ### Memory System
 
-- Embeddings cached in-memory (LRU)
-- Batch embedding requests
-- Async I/O throughout
-- Tantivy for fast vector search
+- SQLite text search for RAG (< 10ms per query)
+- Stop word filtering for better relevance
+- Searches both retrieval and training namespaces
+- Optional: Qwen3-Embedding for vector search (port 8083)
 
 ### LLM Client
 
 - Connection pooling
 - Request timeouts
 - Streaming for real-time responses
-- Runtime model hot-swap
+- Runtime model hot-swap via symlink
 
 ### Training
 
-- LoRA for efficiency
-- Gradient accumulation
-- Priority-based experience replay
-- Adaptive learning rate
+- LoRA for efficiency (Qwen3.5-4B fine-tuned)
+- unsloth for fast training
+- Symlink versioning for model deployment
+- Automatic systemd restart after training
 
 ### Multi-Modal
 
