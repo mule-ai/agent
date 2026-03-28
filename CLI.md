@@ -1,11 +1,12 @@
 # AGI Agent CLI
 
-Interactive CLI for chatting with qwen3.5-4b (via llama.cpp) and triggering RL training.
+Interactive CLI for chatting with qwen3.5-4b and triggering RL training.
 
 ## Prerequisites
 
 - **llama.cpp server** must be running on `10.10.199.146:8081`
 - Model: **Qwen3.5-4B-GGUF:Q8_0** (~4.5 GB)
+- **unsloth** for RL training (installed in `/home/administrator/.venv`)
 
 ```bash
 # Check if server is running
@@ -25,23 +26,22 @@ python3 cli.py chat
 ./agi chat
 ```
 
-### Chat with a specific model
+### Chat commands (during chat)
 
-```bash
-python3 cli.py chat --model glm-4.7-flash
-./agi chat --model glm-4.7-flash
-```
+- `exit` / `quit` / `q` - End session and save for training
+- `clear` / `c` - Clear conversation
+- `save` / `s` - Save conversation for training
 
 ### Trigger RL training
 
 ```bash
-# Default: 500 steps, 3 epochs
+# Default: 500 steps
 python3 cli.py train
 ./agi train
 
 # Custom settings
-python3 cli.py train --steps 1000 --epochs 5
-./agi train --steps 1000 --epochs 5
+python3 cli.py train --steps 1000
+./agi train --steps 1000
 ```
 
 ### Check training status
@@ -58,35 +58,67 @@ python3 cli.py models
 ./agi models
 ```
 
-### Chat with a trained LoRA adapter
-
-```bash
-python3 cli.py chat-adapter my-trained-adapter
-./agi adapter my-trained-adapter
-```
-
 ## Workflow
 
-1. **Start chatting** with the base model:
-   ```bash
-   ./agi chat
-   ```
+### 1. Chat and Collect Data
 
-2. **Trigger RL training** when you have good conversations:
-   ```bash
-   ./agi train --steps 500
-   ```
+```bash
+./agi chat
+# Chat with the model...
+# Type 'exit' to save conversation
+```
 
-3. **Chat with the newly trained model**:
-   ```bash
-   ./agi adapter <adapter-name>
-   ```
+Conversations are automatically saved to:
+- `.agent/conversations/` - Full conversation logs
+- `.agent/training_data/` - Individual training examples
 
-## Interactive Commands
+### 2. Trigger RL Training
 
-Inside chat mode:
-- `exit` / `quit` / `q` - End the session
-- `clear` / `c` - Clear conversation history
+```bash
+./agi train
+```
+
+This uses **unsloth GRPO** (Group Relative Policy Optimization) to fine-tune the model with your collected conversations.
+
+### 3. Chat with Trained Model
+
+After training completes, the LoRA adapter is saved to:
+```
+~/.agent/trained_models/qwen35-4b-YYYYMMDD-HHMMSS/
+```
+
+To use with llama.cpp, you'll need to merge the LoRA adapter with the base model.
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     CLI (cli.py)                            │
+│    - Interactive chat with streaming                       │
+│    - Saves conversations for training                      │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│              llama.cpp server (port 8081)                   │
+│    - Qwen3.5-4B-Q8_0 inference                           │
+│    - Streaming responses                                   │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼ (on exit)
+┌─────────────────────────────────────────────────────────────┐
+│              Training Data Storage                          │
+│    .agent/conversations/  - Full logs                     │
+│    .agent/training_data/  - User→Assistant pairs          │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼ (on train)
+┌─────────────────────────────────────────────────────────────┐
+│              unsloth GRPO Training                         │
+│    - Uses HuggingFace model (unsloth/Qwen3.5-4B)         │
+│    - Outputs LoRA adapter                                  │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ## Configuration
 
@@ -108,11 +140,17 @@ Edit `agent.toml` to configure:
 Make sure llama.cpp server is running:
 ```bash
 sudo systemctl status llama-qwen
-sudo journalctl -u llama-qwen -f
 ```
 
 ### Model not loaded
-The service auto-downloads from HuggingFace on first run. Check:
+Check model download:
 ```bash
 ls -lh /home/administrator/.cache/llama.cpp/
+```
+
+### Training fails
+Ensure unsloth is installed:
+```bash
+source /home/administrator/.venv/bin/activate
+pip install unsloth trl
 ```
