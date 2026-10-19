@@ -290,7 +290,7 @@ impl SqliteMemoryStore {
             Box::new(tantivy::query::AllQuery)
         });
 
-        let top_docs = searcher.search(&query, &TopDocs::with_limit(limit))
+        let top_docs = searcher.search(&query, &TopDocs::with_limit(limit).order_by_score())
             .context("Search failed")?;
 
         let mut results = Vec::new();
@@ -396,4 +396,44 @@ pub struct MemoryStats {
     pub total: usize,
     pub by_namespace: Vec<(String, i64)>,
     pub by_type: Vec<(String, i64)>,
+}
+
+#[cfg(test)]
+mod query_regression_tests {
+    use super::*;
+    use crate::models::Memory;
+
+    fn tmp_store(tag: &str) -> SqliteMemoryStore {
+        let dir = std::env::temp_dir().join(format!("agent-sec-{}-{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        SqliteMemoryStore::new(dir.join("mem.db"), dir.join("idx")).expect("store::new")
+    }
+
+    // Regression test for the tantivy 0.27 collector migration in query():
+    // TopDocs::with_limit(n) now requires .order_by_score() to satisfy the
+    // Collector bound. This exercises that exact path (index -> namespace
+    // text search -> doc fetch). Zero coverage existed before the major bump.
+    #[test]
+    fn tantivy_query_returns_namespace_matches() {
+        let store = tmp_store("q1");
+        let mut a = Memory::new("the quick brown fox".into(), "notes".into()); a.id = "id-1".into();
+        let mut b = Memory::new("lazy dog sleeps".into(), "notes".into());      b.id = "id-2".into();
+        let mut c = Memory::new("unrelated doc".into(), "other".into());        c.id = "id-3".into();
+        store.store(&a).unwrap();
+        store.store(&b).unwrap();
+        store.store(&c).unwrap();
+
+        let mut ids: Vec<String> = store.query(&[], "notes", 10, 0.0).unwrap()
+            .iter().map(|r| r.memory.id.clone()).collect();
+        ids.sort();
+        assert_eq!(ids, vec!["id-1".to_string(), "id-2".to_string()]);
+
+        let other = store.query(&[], "other", 10, 0.0).unwrap();
+        assert_eq!(other.len(), 1);
+        assert_eq!(other[0].memory.id, "id-3");
+
+        let limited = store.query(&[], "notes", 1, 0.0).unwrap();
+        assert_eq!(limited.len(), 1);
+    }
 }
